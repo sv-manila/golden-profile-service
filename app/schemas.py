@@ -237,9 +237,13 @@ class CredentialSearchIn(BaseModel):
     cami_employee_id: Optional[int] = None
 
     @model_validator(mode="after")
-    def _require_registry(self):
+    def _require_fields(self):
         if self.credential_database_id is None and not self.registry_prefix:
             raise ValueError("Either credential_database_id or registry_prefix is required")
+        if not (self.params_first_name and self.params_first_name.strip()):
+            raise ValueError("params_first_name is required")
+        if not (self.params_last_name and self.params_last_name.strip()):
+            raise ValueError("params_last_name is required")
         return self
 
 
@@ -282,3 +286,72 @@ class CredentialSearchResult(BaseModel):
     reason: str
     credential_match: Optional[CredentialMatchOut] = None
     resolution: Optional[ResolutionOut] = None
+
+
+# --------------------------------------------------------------------------- #
+# General (name-based) search
+# --------------------------------------------------------------------------- #
+class GeneralSearchIn(BaseModel):
+    # Required.
+    params_first_name: str
+    params_last_name: str
+    # Optional filters applied to the credential matches only.
+    params_credential_id: Optional[str] = None       # license number
+    params_certification_state: Optional[str] = None  # registry state, e.g. "NY"
+
+    @model_validator(mode="after")
+    def _require_name(self):
+        if not (self.params_first_name and self.params_first_name.strip()):
+            raise ValueError("params_first_name is required")
+        if not (self.params_last_name and self.params_last_name.strip()):
+            raise ValueError("params_last_name is required")
+        return self
+
+
+class GeneralCredentialMatchOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    cami_employee_id: int
+    credential_database_id: int
+    registry_prefix: Optional[str] = None
+    registry_state: Optional[str] = None
+    params_first_name: Optional[str] = None
+    params_middle_name: Optional[str] = None
+    params_last_name: Optional[str] = None
+    params_credential_id: Optional[str] = None
+    params_license_type: Optional[str] = None
+    match_summary_status: Optional[str] = None
+    status: Optional[str] = None
+    expiry_date: Optional[date] = None
+    check_date: Optional[datetime] = None
+    match: Optional[str] = None
+
+
+class GeneralExclusionMatchOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    cami_employee_id: int
+    cami_match_id: Optional[int] = None
+    exclusion_list_id: int
+    exclusion_list_prefix: Optional[str] = None
+    params_first_name: Optional[str] = None
+    params_middle_name: Optional[str] = None
+    params_last_name: Optional[str] = None
+    match: Optional[str] = None
+    is_npi_match: bool = False
+    is_ssn_match: bool = False
+    is_license_number_match: bool = False
+    check_date: Optional[datetime] = None
+
+
+class GeneralSearchResult(BaseModel):
+    params_first_name: str
+    params_last_name: str
+    params_credential_id: Optional[str] = None
+    params_certification_state: Optional[str] = None
+    # Latest current credential match per registry matching the name (+ filters).
+    credential_matches: list[GeneralCredentialMatchOut] = Field(default_factory=list)
+    # Current exclusion matches matching the name.
+    exclusion_matches: list[GeneralExclusionMatchOut] = Field(default_factory=list)

@@ -122,3 +122,107 @@ def search_credential(db: Session, payload: schemas.CredentialSearchIn) -> schem
         action="trigger_scrape",
         reason="No valid match or resolution in Golden Profile; trigger bot scrape.",
     )
+
+
+def general_search(db: Session, payload: schemas.GeneralSearchIn) -> schemas.GeneralSearchResult:
+    """Name-based lookup: the latest current credential match per registry for a
+    first/last name, plus current exclusion matches for that name.
+
+    Optional filters (applied to credential matches only): license number
+    (`params_credential_id`) and certification state (the registry's state).
+    """
+    first = payload.params_first_name.strip().lower()
+    last = payload.params_last_name.strip().lower()
+
+    # --- Credential matches: current, matching name, newest first ---
+    cm_stmt = select(models.CredentialMatch).where(
+        models.CredentialMatch.current.is_(True),
+        func.lower(models.CredentialMatch.params_first_name) == first,
+        func.lower(models.CredentialMatch.params_last_name) == last,
+    )
+    if payload.params_credential_id:
+        cm_stmt = cm_stmt.where(
+            models.CredentialMatch.params_credential_id == payload.params_credential_id
+        )
+    if payload.params_certification_state:
+        # Certification state filters by the registry's state.
+        cm_stmt = cm_stmt.join(
+            models.CredentialDatabase,
+            models.CredentialDatabase.id == models.CredentialMatch.credential_database_id,
+        ).where(
+            func.lower(models.CredentialDatabase.state)
+            == payload.params_certification_state.strip().lower()
+        )
+    cm_stmt = cm_stmt.order_by(
+        models.CredentialMatch.check_date.is_(None),
+        models.CredentialMatch.check_date.desc(),
+        models.CredentialMatch.id.desc(),
+    )
+
+    # Keep only the latest match per registry (rows already newest-first).
+    latest_by_registry: dict[int, models.CredentialMatch] = {}
+    for cm in db.scalars(cm_stmt):
+        latest_by_registry.setdefault(cm.credential_database_id, cm)
+
+    credential_matches = []
+    for cm in latest_by_registry.values():
+        registry = cm.credential_database
+        credential_matches.append(
+            schemas.GeneralCredentialMatchOut(
+                id=cm.id,
+                cami_employee_id=cm.cami_employee_id,
+                credential_database_id=cm.credential_database_id,
+                registry_prefix=registry.prefix if registry else None,
+                registry_state=registry.state if registry else None,
+                params_first_name=cm.params_first_name,
+                params_middle_name=cm.params_middle_name,
+                params_last_name=cm.params_last_name,
+                params_credential_id=cm.params_credential_id,
+                params_license_type=cm.params_license_type,
+                match_summary_status=cm.match_summary_status,
+                status=cm.status,
+                expiry_date=cm.expiry_date,
+                check_date=cm.check_date,
+                match=cm.match,
+            )
+        )
+
+    # --- Exclusion matches: current, matching name ---
+    ex_stmt = (
+        select(models.ExclusionMatch)
+        .where(
+            models.ExclusionMatch.current.is_(True),
+            func.lower(models.ExclusionMatch.params_first_name) == first,
+            func.lower(models.ExclusionMatch.params_last_name) == last,
+        )
+        .order_by(models.ExclusionMatch.id.desc())
+    )
+    exclusion_matches = []
+    for em in db.scalars(ex_stmt):
+        exclusion_list = em.exclusion_list
+        exclusion_matches.append(
+            schemas.GeneralExclusionMatchOut(
+                id=em.id,
+                cami_employee_id=em.cami_employee_id,
+                cami_match_id=em.cami_match_id,
+                exclusion_list_id=em.exclusion_list_id,
+                exclusion_list_prefix=exclusion_list.prefix if exclusion_list else None,
+                params_first_name=em.params_first_name,
+                params_middle_name=em.params_middle_name,
+                params_last_name=em.params_last_name,
+                match=em.match,
+                is_npi_match=em.is_npi_match,
+                is_ssn_match=em.is_ssn_match,
+                is_license_number_match=em.is_license_number_match,
+                check_date=em.check_date,
+            )
+        )
+
+    return schemas.GeneralSearchResult(
+        params_first_name=payload.params_first_name,
+        params_last_name=payload.params_last_name,
+        params_credential_id=payload.params_credential_id,
+        params_certification_state=payload.params_certification_state,
+        credential_matches=credential_matches,
+        exclusion_matches=exclusion_matches,
+    )

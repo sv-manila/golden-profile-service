@@ -100,7 +100,8 @@ def test_search_expired_match_triggers_scrape(client):
     )
     r = client.post(
         "/api/v1/search/credential",
-        json={"credential_database_id": reg, "params_credential_id": "RN-EXP", "params_license_type": "RN"},
+        json={"credential_database_id": reg, "params_credential_id": "RN-EXP", "params_license_type": "RN",
+              "params_first_name": "Any", "params_last_name": "Name"},
     )
     assert r.json()["action"] == "trigger_scrape"
 
@@ -142,7 +143,8 @@ def test_search_no_match_triggers_scrape(client):
     reg = _make_registry(client, "EMPTY-REG")
     r = client.post(
         "/api/v1/search/credential",
-        json={"credential_database_id": reg, "params_credential_id": "NOPE", "params_license_type": "RN"},
+        json={"credential_database_id": reg, "params_credential_id": "NOPE", "params_license_type": "RN",
+              "params_first_name": "No", "params_last_name": "Match"},
     )
     assert r.json() == {
         "found": False,
@@ -187,14 +189,32 @@ def test_prefix_based_sync_and_search(client):
 def test_search_unknown_prefix_triggers_scrape(client):
     r = client.post(
         "/api/v1/search/credential",
-        json={"registry_prefix": "does-not-exist", "params_credential_id": "X"},
+        json={"registry_prefix": "does-not-exist", "params_credential_id": "X",
+              "params_first_name": "Un", "params_last_name": "Known"},
     )
     assert r.json()["action"] == "trigger_scrape"
 
 
 def test_missing_registry_is_rejected(client):
-    r = client.post("/api/v1/search/credential", json={"params_credential_id": "X"})
+    r = client.post("/api/v1/search/credential",
+                    json={"params_credential_id": "X", "params_first_name": "A", "params_last_name": "B"})
     assert r.status_code == 422
+
+
+def test_missing_name_is_rejected(client):
+    reg = _make_registry(client, "NAME-REQ")
+    # No first name
+    r1 = client.post("/api/v1/search/credential",
+                     json={"credential_database_id": reg, "params_last_name": "Doe"})
+    assert r1.status_code == 422
+    # No last name
+    r2 = client.post("/api/v1/search/credential",
+                     json={"credential_database_id": reg, "params_first_name": "Jane"})
+    assert r2.status_code == 422
+    # Blank names are rejected too
+    r3 = client.post("/api/v1/search/credential",
+                     json={"credential_database_id": reg, "params_first_name": " ", "params_last_name": " "})
+    assert r3.status_code == 422
 
 
 def test_exclusion_match_sync(client):
@@ -221,3 +241,77 @@ def test_exclusion_match_sync(client):
         json={"cami_employee_id": 9001, "exclusion_list_id": ex, "match": "{}"},
     )
     assert r2.json()["superseded_ids"] == [body["id"]]
+
+
+# --------------------------------------------------------------------------- #
+# General (name-based) search
+# --------------------------------------------------------------------------- #
+def _seed_general(client, tag):
+    """Seed 2 state-specific registries + 2 credential matches + 1 exclusion for
+    a unique name (isolates tests sharing the session-scoped DB)."""
+    first, last = "Gena", f"Searcher{tag}"
+    ny = client.post("/api/v1/credential-databases",
+                     json={"prefix": f"GEN{tag}-NY", "description": "Gen NY", "state": "NY"}).json()["id"]
+    ca = client.post("/api/v1/credential-databases",
+                     json={"prefix": f"GEN{tag}-CA", "description": "Gen CA", "state": "CA"}).json()["id"]
+    client.post("/api/v1/credential-matches", json={
+        "cami_employee_id": 9100, "credential_database_id": ny,
+        "params_first_name": first, "params_last_name": last,
+        "params_credential_id": "NY-111", "params_license_type": "RN",
+        "match_summary_status": "Valid", "status": "VALID", "match": "{\"response_code\":2}",
+    })
+    client.post("/api/v1/credential-matches", json={
+        "cami_employee_id": 9100, "credential_database_id": ca,
+        "params_first_name": first, "params_last_name": last,
+        "params_credential_id": "CA-222", "params_license_type": "RN",
+        "match_summary_status": "Invalid - Expired", "status": "1", "match": "{\"response_code\":2}",
+    })
+    ex = _make_exclusion_list(client, f"GEN{tag}-OIG")
+    client.post("/api/v1/exclusion-matches", json={
+        "cami_employee_id": 9100, "exclusion_list_id": ex,
+        "params_first_name": first, "params_last_name": last,
+        "match": "{\"hit\":true}", "is_npi_match": True,
+    })
+    return first, last
+
+
+def test_general_search_returns_matches_per_registry_and_exclusions(client):
+    first, last = _seed_general(client, "A")
+    r = client.post("/api/v1/search/general",
+                    json={"params_first_name": first, "params_last_name": last})
+    assert r.status_code == 200
+    body = r.json()
+    # One credential match per registry (2), plus the exclusion match.
+    assert len(body["credential_matches"]) == 2
+    assert sorted(m["registry_state"] for m in body["credential_matches"]) == ["CA", "NY"]
+    assert len(body["exclusion_matches"]) == 1
+    assert body["exclusion_matches"][0]["is_npi_match"] is True
+
+
+def test_general_search_filters_by_license_number(client):
+    first, last = _seed_general(client, "B")
+    r = client.post("/api/v1/search/general",
+                    json={"params_first_name": first, "params_last_name": last,
+                          "params_credential_id": "NY-111"})
+    body = r.json()
+    assert len(body["credential_matches"]) == 1
+    assert body["credential_matches"][0]["params_credential_id"] == "NY-111"
+    # Exclusions are unaffected by the credential filters.
+    assert len(body["exclusion_matches"]) == 1
+
+
+def test_general_search_filters_by_certification_state(client):
+    first, last = _seed_general(client, "C")
+    r = client.post("/api/v1/search/general",
+                    json={"params_first_name": first, "params_last_name": last,
+                          "params_certification_state": "ny"})
+    body = r.json()
+    assert len(body["credential_matches"]) == 1
+    assert body["credential_matches"][0]["registry_state"] == "NY"
+
+
+def test_general_search_requires_name(client):
+    assert client.post("/api/v1/search/general", json={"params_first_name": "OnlyFirst"}).status_code == 422
+    assert client.post("/api/v1/search/general", json={"params_last_name": "OnlyLast"}).status_code == 422
+    assert client.post("/api/v1/search/general",
+                       json={"params_first_name": " ", "params_last_name": " "}).status_code == 422
