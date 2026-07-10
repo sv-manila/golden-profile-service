@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
@@ -153,6 +153,17 @@ def general_search(db: Session, payload: schemas.GeneralSearchIn) -> schemas.Gen
             func.lower(models.CredentialDatabase.state)
             == payload.params_certification_state.strip().lower()
         )
+    if not payload.include_expired:
+        # Hide expired results by default (an unset expiry_date is not expired).
+        cm_stmt = cm_stmt.where(
+            or_(
+                models.CredentialMatch.expiry_date.is_(None),
+                models.CredentialMatch.expiry_date >= date.today(),
+            )
+        )
+    if payload.exclude_no_matches:
+        # "No match" results are stored with status = CredentialMatch::NO_MATCH ("2").
+        cm_stmt = cm_stmt.where(models.CredentialMatch.status != "2")
     cm_stmt = cm_stmt.order_by(
         models.CredentialMatch.check_date.is_(None),
         models.CredentialMatch.check_date.desc(),
@@ -223,6 +234,8 @@ def general_search(db: Session, payload: schemas.GeneralSearchIn) -> schemas.Gen
         params_last_name=payload.params_last_name,
         params_credential_id=payload.params_credential_id,
         params_certification_state=payload.params_certification_state,
+        include_expired=payload.include_expired,
+        exclude_no_matches=payload.exclude_no_matches,
         credential_matches=credential_matches,
         exclusion_matches=exclusion_matches,
     )

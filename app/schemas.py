@@ -298,6 +298,9 @@ class GeneralSearchIn(BaseModel):
     # Optional filters applied to the credential matches only.
     params_credential_id: Optional[str] = None       # license number
     params_certification_state: Optional[str] = None  # registry state, e.g. "NY"
+    # Config flags (credential matches only). Expired results are hidden by default.
+    include_expired: bool = False       # include matches past their expiry_date
+    exclude_no_matches: bool = False    # drop "no match" (NO_MATCH) results
 
     @model_validator(mode="after")
     def _require_name(self):
@@ -351,6 +354,8 @@ class GeneralSearchResult(BaseModel):
     params_last_name: str
     params_credential_id: Optional[str] = None
     params_certification_state: Optional[str] = None
+    include_expired: bool = False
+    exclude_no_matches: bool = False
     # Latest current credential match per registry matching the name (+ filters).
     credential_matches: list[GeneralCredentialMatchOut] = Field(default_factory=list)
     # Current exclusion matches matching the name.

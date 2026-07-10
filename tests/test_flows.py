@@ -315,3 +315,40 @@ def test_general_search_requires_name(client):
     assert client.post("/api/v1/search/general", json={"params_last_name": "OnlyLast"}).status_code == 422
     assert client.post("/api/v1/search/general",
                        json={"params_first_name": " ", "params_last_name": " "}).status_code == 422
+
+
+def test_general_search_hides_expired_by_default(client):
+    reg = _make_registry(client, "EXP-REG")
+    client.post("/api/v1/credential-matches", json={
+        "cami_employee_id": 9200, "credential_database_id": reg,
+        "params_first_name": "Exp", "params_last_name": "Ired",
+        "params_credential_id": "E-1", "status": "VALID",
+        "match_summary_status": "Valid", "expiry_date": "2000-01-01",
+        "match": "{\"response_code\":2}",
+    })
+    # Default: expired result is hidden.
+    r = client.post("/api/v1/search/general",
+                    json={"params_first_name": "Exp", "params_last_name": "Ired"})
+    assert len(r.json()["credential_matches"]) == 0
+    # include_expired=true: shown.
+    r2 = client.post("/api/v1/search/general",
+                     json={"params_first_name": "Exp", "params_last_name": "Ired", "include_expired": True})
+    assert len(r2.json()["credential_matches"]) == 1
+
+
+def test_general_search_exclude_no_matches(client):
+    reg = _make_registry(client, "NM-REG")
+    client.post("/api/v1/credential-matches", json={
+        "cami_employee_id": 9300, "credential_database_id": reg,
+        "params_first_name": "Noma", "params_last_name": "Tch",
+        "params_credential_id": "N-1", "status": "2",   # CredentialMatch::NO_MATCH
+        "match_summary_status": "No Match", "match": "{\"response_code\":1}",
+    })
+    # Default: no-match is included.
+    r = client.post("/api/v1/search/general",
+                    json={"params_first_name": "Noma", "params_last_name": "Tch"})
+    assert len(r.json()["credential_matches"]) == 1
+    # exclude_no_matches=true: filtered out.
+    r2 = client.post("/api/v1/search/general",
+                     json={"params_first_name": "Noma", "params_last_name": "Tch", "exclude_no_matches": True})
+    assert len(r2.json()["credential_matches"]) == 0
