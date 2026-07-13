@@ -260,20 +260,23 @@ def _seed_general(client, tag):
     first, last = "Gena", f"Searcher{tag}"
     ny = f"gen{tag}-ny".lower()
     ca = f"gen{tag}-ca".lower()
+    # Unique employee per tag — a shared id would let entity resolution fold
+    # different tags' records together (they are distinct logical people).
+    emp = 9100 + ord(tag[0])
     client.post("/api/v1/credential-matches", json={
-        "cami_employee_id": 9100, "registry": ny,
+        "cami_employee_id": emp, "registry": ny,
         "params_first_name": first, "params_last_name": last,
         "params_credential_id": "NY-111", "params_license_type": "RN",
         "match_summary_status": "Valid", "status": "VALID", "match": "{\"response_code\":2}",
     })
     client.post("/api/v1/credential-matches", json={
-        "cami_employee_id": 9100, "registry": ca,
+        "cami_employee_id": emp, "registry": ca,
         "params_first_name": first, "params_last_name": last,
         "params_credential_id": "CA-222", "params_license_type": "RN",
         "match_summary_status": "Invalid - Expired", "status": "1", "match": "{\"response_code\":2}",
     })
     client.post("/api/v1/exclusion-matches", json={
-        "cami_employee_id": 9100, "prefix": f"gen{tag}-oig".lower(),
+        "cami_employee_id": emp, "prefix": f"gen{tag}-oig".lower(),
         "params_first_name": first, "params_last_name": last,
         "match": "{\"hit\":true}", "is_npi_match": True,
     })

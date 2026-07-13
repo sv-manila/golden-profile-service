@@ -20,7 +20,7 @@ def _post_match(client, *, emp, first, last, registry, cred, status, summary, ch
 
 
 def test_general_search_flags_conflicting_status(client):
-    first, last, emp, reg = "Cora", "ConflictA", 9300, "conf-a-ny"
+    first, last, emp, reg = "Cora", "ConflictA", 9600, "conf-a-ny"
     # Older snapshot says INVALID, newer says VALID — same registry + license.
     old_id = _post_match(client, emp=emp, first=first, last=last, registry=reg,
                          cred="NY-900", status="1", summary="Invalid - Expired",
@@ -44,7 +44,7 @@ def test_general_search_flags_conflicting_status(client):
 
 
 def test_general_search_no_conflict_when_snapshots_agree(client):
-    first, last, emp, reg = "Cora", "ConflictB", 9301, "conf-b-ny"
+    first, last, emp, reg = "Cora", "ConflictB", 9601, "conf-b-ny"
     # Two snapshots, same VALID determination — re-verification, not a conflict.
     _post_match(client, emp=emp, first=first, last=last, registry=reg,
                 cred="NY-901", status="VALID", summary="Valid",
@@ -63,7 +63,7 @@ def test_general_search_no_conflict_when_snapshots_agree(client):
 
 def test_general_search_different_registries_are_not_a_conflict(client):
     """Different registries legitimately differ (different scope) — not a conflict."""
-    first, last, emp = "Cora", "ConflictC", 9302
+    first, last, emp = "Cora", "ConflictC", 9602
     _post_match(client, emp=emp, first=first, last=last, registry="conf-c-ny",
                 cred="NY-902", status="VALID", summary="Valid",
                 check_date="2026-06-01T00:00:00")

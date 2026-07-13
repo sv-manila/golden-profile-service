@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 
 from .. import metrics, models, schemas
 from ..config import get_settings
+from . import resolution
 
 # Structured decision log. /stats counters reset on restart; these lines are the
 # durable record scraped into CloudWatch for hit-rate / conflict monitoring.
@@ -220,10 +221,23 @@ def general_search(db: Session, payload: schemas.GeneralSearchIn) -> schemas.Gen
     first = payload.params_first_name.strip().lower()
     last = payload.params_last_name.strip().lower()
 
-    # --- Credential matches: matching name, newest first ---
+    # Resolve the query name to a set of cami_employee_ids. With resolve on, the
+    # name seeds are expanded to the whole canonical person (records linked by
+    # shared NPI / license), so differently-spelled records are included; off,
+    # only the exact-name records are used. Merging never happens on name alone.
+    seeds = _name_seed_employees(db, first, last)
+    if payload.resolve and seeds:
+        emp_keys = resolution._employee_keys(db)
+        key_emps = resolution._key_index(emp_keys)
+        group = resolution._closure(seeds, emp_keys, key_emps)
+    else:
+        group = seeds
+
+    # --- Credential matches for the resolved person, newest first ---
     cm_stmt = select(models.CredentialMatch).where(
-        func.lower(models.CredentialMatch.params_first_name) == first,
-        func.lower(models.CredentialMatch.params_last_name) == last,
+        models.CredentialMatch.cami_employee_id.in_(group) if group else func.lower(
+            models.CredentialMatch.params_first_name
+        ) == "\x00",  # empty group -> match nothing
     )
     if payload.params_credential_id:
         cm_stmt = cm_stmt.where(
@@ -306,12 +320,14 @@ def general_search(db: Session, payload: schemas.GeneralSearchIn) -> schemas.Gen
             )
         )
 
-    # --- Exclusion matches: matching name, newest first ---
+    # --- Exclusion matches for the resolved person, newest first ---
+    # Name-only people (no strong id) still resolve to just themselves, so this
+    # never attaches another person's exclusion.
     ex_stmt = (
         select(models.ExclusionMatch)
         .where(
-            func.lower(models.ExclusionMatch.params_first_name) == first,
-            func.lower(models.ExclusionMatch.params_last_name) == last,
+            models.ExclusionMatch.cami_employee_id.in_(group) if group
+            else func.lower(models.ExclusionMatch.params_first_name) == "\x00",
         )
         .order_by(models.ExclusionMatch.id.desc())
     )
@@ -347,6 +363,21 @@ def general_search(db: Session, payload: schemas.GeneralSearchIn) -> schemas.Gen
         params_credential_id=payload.params_credential_id,
         include_expired=payload.include_expired,
         exclude_no_matches=payload.exclude_no_matches,
+        canonical_employee_ids=sorted(group),
         credential_matches=credential_matches,
         exclusion_matches=exclusion_matches,
     )
+
+
+def _name_seed_employees(db: Session, first: str, last: str) -> set[int]:
+    """cami_employee_ids whose credential OR exclusion records carry this exact
+    name — the seeds entity resolution expands from."""
+    cm = select(models.CredentialMatch.cami_employee_id).where(
+        func.lower(models.CredentialMatch.params_first_name) == first,
+        func.lower(models.CredentialMatch.params_last_name) == last,
+    )
+    ex = select(models.ExclusionMatch.cami_employee_id).where(
+        func.lower(models.ExclusionMatch.params_first_name) == first,
+        func.lower(models.ExclusionMatch.params_last_name) == last,
+    )
+    return set(db.scalars(cm)) | set(db.scalars(ex))

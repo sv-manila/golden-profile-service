@@ -309,6 +309,10 @@ class GeneralSearchIn(BaseModel):
     # Config flags (credential matches only). Expired results are hidden by default.
     include_expired: bool = False       # include matches past their expiry_date
     exclude_no_matches: bool = False    # drop "no match" (NO_MATCH) results
+    # Entity resolution: expand the name match to the whole canonical person
+    # (records linked by shared NPI / license), so differently-spelled records
+    # of the same person are included. Off = exact-name records only.
+    resolve: bool = True
 
     @model_validator(mode="after")
     def _require_name(self):
@@ -418,6 +422,8 @@ class GeneralSearchResult(BaseModel):
     params_credential_id: Optional[str] = None
     include_expired: bool = False
     exclude_no_matches: bool = False
+    # Every cami_employee_id folded into this person by entity resolution.
+    canonical_employee_ids: list[int] = Field(default_factory=list)
     # Latest credential match per registry matching the name (+ filters).
     credential_matches: list[GeneralCredentialMatchOut] = Field(default_factory=list)
     # Latest exclusion matches matching the name.
