@@ -7,7 +7,7 @@ from fastapi import FastAPI
 
 from . import __version__
 from .database import init_db
-from .routers import credential_matches, employees, exclusion_matches, search, stats
+from .routers import credential_matches, employees, exclusion_matches, resolve, search, stats
 
 
 @asynccontextmanager
@@ -31,6 +31,7 @@ app.include_router(employees.router)
 app.include_router(credential_matches.router)
 app.include_router(exclusion_matches.router)
 app.include_router(search.router)
+app.include_router(resolve.router)
 app.include_router(stats.router)
 
 

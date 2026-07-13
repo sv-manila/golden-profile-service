@@ -355,6 +355,46 @@ class GeneralCredentialMatchOut(BaseModel):
     conflicts: list[GeneralCredentialConflictOut] = []
 
 
+# --------------------------------------------------------------------------- #
+# Entity resolution
+# --------------------------------------------------------------------------- #
+class ResolveIn(BaseModel):
+    # Strong identifiers (any one anchors a merge). Name is review-only.
+    npi: Optional[str] = None
+    license_number: Optional[str] = None
+    registry: Optional[str] = None          # required alongside license_number
+    params_first_name: Optional[str] = None
+    params_last_name: Optional[str] = None
+
+
+class ResolveLicense(BaseModel):
+    registry: Optional[str] = None
+    number: Optional[str] = None
+
+
+class ResolveIdentifiers(BaseModel):
+    npi: list[str] = []
+    licenses: list[ResolveLicense] = []
+
+
+class ResolveName(BaseModel):
+    first: Optional[str] = None
+    last: Optional[str] = None
+
+
+class ResolveOut(BaseModel):
+    # True only when a strong identifier produced a canonical group.
+    resolved: bool
+    # How the group was anchored: "npi" | "license" | "name_only" | "none".
+    match_basis: str
+    # The unified person: every cami_employee_id linked by shared strong ids.
+    canonical_employee_ids: list[int] = []
+    # Name-only matches that were NOT merged (need confirmation before merge).
+    name_only_candidates: list[int] = []
+    identifiers: ResolveIdentifiers = ResolveIdentifiers()
+    names: list[ResolveName] = []
+
+
 class GeneralExclusionMatchOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
