@@ -6,17 +6,49 @@ there is no "current" flag to maintain or older rows to supersede.
 """
 from __future__ import annotations
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import metrics, models, schemas
 
 
+def _existing_snapshot(
+    db: Session, payload: schemas.CredentialMatchSyncIn
+) -> models.CredentialMatch | None:
+    """The already-synced snapshot for this check event, if any.
+
+    A check event is identified by (cami_credential_match_id, check_date): the
+    observer, a controller bulk push, and the reconcile safety-net can each push
+    the same event, and without this they would append duplicate snapshots.
+    Dedup only when both keys are present — otherwise we cannot match safely."""
+    if payload.cami_credential_match_id is None or payload.check_date is None:
+        return None
+    stmt = (
+        select(models.CredentialMatch)
+        .where(
+            models.CredentialMatch.cami_credential_match_id
+            == payload.cami_credential_match_id,
+            models.CredentialMatch.check_date == payload.check_date,
+        )
+        .order_by(models.CredentialMatch.id.desc())
+    )
+    return db.scalars(stmt).first()
+
+
 def _sync_one(
     db: Session, payload: schemas.CredentialMatchSyncIn
 ) -> schemas.CredentialMatchSyncResult:
-    """Insert one snapshot. Does NOT commit — the caller owns the transaction so
-    a batch can commit atomically."""
+    """Insert one snapshot (idempotent per check event). Does NOT commit — the
+    caller owns the transaction so a batch can commit atomically."""
     registry = (payload.registry or "").strip().lower()
+
+    existing = _existing_snapshot(db, payload)
+    if existing is not None:
+        return schemas.CredentialMatchSyncResult(
+            id=existing.id,
+            cami_employee_id=existing.cami_employee_id,
+            registry=existing.registry,
+        )
 
     cm = models.CredentialMatch(
         cami_employee_id=payload.cami_employee_id,
