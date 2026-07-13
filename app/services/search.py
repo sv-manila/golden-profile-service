@@ -14,6 +14,7 @@ Flow (from the spec flowchart):
 from __future__ import annotations
 
 import json
+import logging
 from datetime import date, datetime, timezone
 
 from sqlalchemy import func, or_, select
@@ -21,6 +22,10 @@ from sqlalchemy.orm import Session
 
 from .. import metrics, models, schemas
 from ..config import get_settings
+
+# Structured decision log. /stats counters reset on restart; these lines are the
+# durable record scraped into CloudWatch for hit-rate / conflict monitoring.
+log = logging.getLogger("golden_profile.search")
 
 
 def _digits(value: str | None) -> str:
@@ -129,6 +134,11 @@ def search_credential(db: Session, payload: schemas.CredentialSearchIn) -> schem
             if _is_stale(cm, ttl_days):
                 metrics.incr(metrics.SEARCH_STALE)
                 metrics.incr(metrics.SEARCH_MISS)
+                log.info(
+                    "search.credential registry=%s action=trigger_scrape "
+                    "reason=stale age_days=%s ttl_days=%s",
+                    registry, _match_age_days(cm), ttl_days,
+                )
                 return schemas.CredentialSearchResult(
                     found=False,
                     action="trigger_scrape",
@@ -141,6 +151,10 @@ def search_credential(db: Session, payload: schemas.CredentialSearchIn) -> schem
             age = _match_age_days(cm)
             metrics.incr(metrics.SEARCH_HIT)
             metrics.record_hit_age(age)
+            log.info(
+                "search.credential registry=%s action=return_result age_days=%s",
+                registry, age,
+            )
             return schemas.CredentialSearchResult(
                 found=True,
                 action="return_result",
@@ -170,6 +184,10 @@ def search_credential(db: Session, payload: schemas.CredentialSearchIn) -> schem
             metrics.incr(metrics.SEARCH_HIT)
             metrics.incr(metrics.SEARCH_RESOLVE)
             metrics.record_hit_age(age)
+            log.info(
+                "search.credential registry=%s action=auto_resolve_name_mismatch age_days=%s",
+                registry, age,
+            )
             return schemas.CredentialSearchResult(
                 found=True,
                 action="auto_resolve_name_mismatch",
@@ -181,6 +199,10 @@ def search_credential(db: Session, payload: schemas.CredentialSearchIn) -> schem
 
     # Step 3: nothing usable in the Golden Profile -> tell CAMI to scrape.
     metrics.incr(metrics.SEARCH_MISS)
+    log.info(
+        "search.credential registry=%s action=trigger_scrape reason=no_match",
+        registry,
+    )
     return schemas.CredentialSearchResult(
         found=False,
         action="trigger_scrape",
@@ -256,6 +278,14 @@ def general_search(db: Session, payload: schemas.GeneralSearchIn) -> schemas.Gen
                         check_date=other.check_date,
                     )
                 )
+        if conflicts:
+            metrics.incr(metrics.SEARCH_CONFLICT)
+            log.info(
+                "search.general registry=%s credential_id=%s has_conflict=true "
+                "winner_id=%s conflict_ids=%s",
+                cm.registry, cm.params_credential_id, cm.id,
+                ",".join(str(c.id) for c in conflicts),
+            )
         credential_matches.append(
             schemas.GeneralCredentialMatchOut(
                 id=cm.id,

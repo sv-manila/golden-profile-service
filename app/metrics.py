@@ -18,6 +18,7 @@ SEARCH_HIT = "search.hit"                    # returned a usable cached result
 SEARCH_MISS = "search.miss"                  # nothing usable -> trigger_scrape
 SEARCH_STALE = "search.stale"                # a valid match existed but was past TTL
 SEARCH_RESOLVE = "search.auto_resolve"       # served via a name-mismatch resolution
+SEARCH_CONFLICT = "search.conflict"          # general search surfaced a disagreement
 SYNC_CREDENTIAL_OK = "sync.credential.ok"
 SYNC_CREDENTIAL_BULK_OK = "sync.credential.bulk_ok"
 
