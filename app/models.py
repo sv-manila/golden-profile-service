@@ -18,6 +18,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     LargeBinary,
     String,
@@ -188,9 +189,16 @@ class EntityAddress(Base):
 class CredentialMatch(Base):
     __tablename__ = "credential_matches"
 
+    # Composite index serves the idempotency dedup lookup
+    # (WHERE cami_credential_match_id = ? AND check_date = ?); its leftmost
+    # prefix also covers cami_credential_match_id-only queries.
+    __table_args__ = (
+        Index("ix_cred_match_dedup", "cami_credential_match_id", "check_date"),
+    )
+
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     cami_employee_id: Mapped[int] = mapped_column(Integer, index=True)
-    cami_credential_match_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    cami_credential_match_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     params_first_name: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     params_middle_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     params_last_name: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
