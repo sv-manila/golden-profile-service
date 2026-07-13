@@ -20,3 +20,14 @@ router = APIRouter(
 def sync_credential_match(payload: schemas.CredentialMatchSyncIn, db: Session = Depends(get_db)):
     """Sync a credential match (with any resolutions) from CAMI."""
     return credential_sync.sync_credential_match(db, payload)
+
+
+@router.post("/bulk", response_model=schemas.CredentialMatchBulkSyncResult, status_code=201)
+def sync_credential_matches_bulk(
+    payload: schemas.CredentialMatchBulkSyncIn, db: Session = Depends(get_db)
+):
+    """Batch-sync many credential matches in one request (one DB transaction).
+
+    Used by the client's queued reconciler/Check-List batch so a list of N
+    employees costs one round-trip instead of N."""
+    return credential_sync.sync_credential_matches_bulk(db, payload)

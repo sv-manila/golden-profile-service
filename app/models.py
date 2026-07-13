@@ -13,6 +13,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     Date,
     DateTime,
@@ -39,7 +40,7 @@ class Individual(Base):
     __tablename__ = "individuals"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    npi: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    npi: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     cami_employee_id: Mapped[int] = mapped_column(Integer, index=True)
     current: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     facility_id: Mapped[str | None] = mapped_column(String(65), nullable=True)
@@ -74,7 +75,7 @@ class Entity(Base):
     __tablename__ = "entities"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    npi: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    npi: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     cami_employee_id: Mapped[int] = mapped_column(Integer, index=True)
     current: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     facility_id: Mapped[str | None] = mapped_column(String(65), nullable=True)
@@ -104,9 +105,9 @@ class IndividualName(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     individual_id: Mapped[int] = mapped_column(ForeignKey("individuals.id"), index=True)
-    first_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    first_name: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     middle_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    last_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    last_name: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     maiden_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     date_created: Mapped[datetime] = mapped_column(DateTime, default=_now)
     date_updated: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
@@ -131,7 +132,7 @@ class LicensingCredential(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     individual_id: Mapped[int] = mapped_column(ForeignKey("individuals.id"), index=True)
-    certification_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    certification_number: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)
     certification_state: Mapped[str | None] = mapped_column(String(65), nullable=True)
     license_type_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     license_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
@@ -182,37 +183,6 @@ class EntityAddress(Base):
 
 
 # --------------------------------------------------------------------------- #
-# Reference data: credential databases (registries) & exclusion lists
-# --------------------------------------------------------------------------- #
-class CredentialDatabase(Base):
-    __tablename__ = "credential_databases"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    prefix: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
-    description: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    type: Mapped[str | None] = mapped_column(String(10), nullable=True)
-    state: Mapped[str | None] = mapped_column(String(2), nullable=True)
-    url: Mapped[str | None] = mapped_column(String(500), nullable=True)
-    match_status_map: Mapped[str | None] = mapped_column(Text, nullable=True)
-    required_fields: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    date_created: Mapped[datetime] = mapped_column(DateTime, default=_now)
-    date_updated: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
-
-
-class ExclusionList(Base):
-    __tablename__ = "exclusion_lists"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    prefix: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
-    description: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    type: Mapped[str | None] = mapped_column(String(10), nullable=True)
-    url: Mapped[str | None] = mapped_column(String(500), nullable=True)
-    verify_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    date_created: Mapped[datetime] = mapped_column(DateTime, default=_now)
-    date_updated: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
-
-
-# --------------------------------------------------------------------------- #
 # Credential matches (+ resolutions)
 # --------------------------------------------------------------------------- #
 class CredentialMatch(Base):
@@ -221,15 +191,14 @@ class CredentialMatch(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     cami_employee_id: Mapped[int] = mapped_column(Integer, index=True)
     cami_credential_match_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
-    params_first_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    params_first_name: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     params_middle_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    params_last_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    params_last_name: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     params_credential_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     params_license_type: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
-    credential_database_id: Mapped[int] = mapped_column(
-        ForeignKey("credential_databases.id"), index=True
-    )
-    current: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    # SV-native registry prefix (e.g. "nursysny", "nyemed"). Denormalized — there
+    # is no separate credential_databases table.
+    registry: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     match_summary_status: Mapped[str | None] = mapped_column(String(10), nullable=True)
     match_context: Mapped[str | None] = mapped_column(Text, nullable=True)
     match: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -239,7 +208,6 @@ class CredentialMatch(Base):
     date_updated: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
     check_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
-    credential_database: Mapped["CredentialDatabase"] = relationship()
     resolutions: Mapped[list["CredentialMatchResolution"]] = relationship(
         back_populates="credential_match", cascade="all, delete-orphan"
     )
@@ -271,8 +239,9 @@ class ExclusionMatch(Base):
     params_first_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     params_middle_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     params_last_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    exclusion_list_id: Mapped[int] = mapped_column(ForeignKey("exclusion_lists.id"), index=True)
-    current: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    # SV-native exclusion-list prefix (e.g. "oig", "sam"). Denormalized — there
+    # is no separate exclusion_lists table.
+    prefix: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     match: Mapped[str | None] = mapped_column(Text, nullable=True)
     hash: Mapped[bytes | None] = mapped_column(LargeBinary(16), nullable=True)
     is_npi_match: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -288,7 +257,6 @@ class ExclusionMatch(Base):
     date_updated: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
     check_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
-    exclusion_list: Mapped["ExclusionList"] = relationship()
     actions: Mapped[list["ExclusionMatchAction"]] = relationship(
         back_populates="exclusion_match", cascade="all, delete-orphan"
     )

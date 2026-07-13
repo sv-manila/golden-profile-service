@@ -27,9 +27,9 @@ def search_credential(payload: schemas.CredentialSearchIn, db: Session = Depends
 def general_search(payload: schemas.GeneralSearchIn, db: Session = Depends(get_db)):
     """Name-based general search.
 
-    Given a required first + last name, returns the latest current credential
-    match per registry for that name, plus current exclusion matches for that
-    name. Optional `params_credential_id` (license number) and
-    `params_certification_state` filter the credential matches when provided.
+    Given a required first + last name, returns the latest credential match per
+    registry for that name, plus the latest exclusion matches for that name.
+    Optional `params_credential_id` (license number) filters the credential
+    matches when provided.
     """
     return search_service.general_search(db, payload)

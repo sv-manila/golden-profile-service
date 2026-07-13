@@ -3,7 +3,7 @@
 When CAMI performs a check for a registry, it asks the Golden Profile first.
 Flow (from the spec flowchart):
 
-  1. Look for a VALID current credential_match matching the params.
+  1. Look for a VALID credential_match matching the params (freshest first).
         -> found  => return_result
   2. Otherwise look for a credential_match matching the params that carries a
      name-mismatch resolution (credential_match_resolutions).
@@ -13,23 +13,62 @@ Flow (from the spec flowchart):
 """
 from __future__ import annotations
 
-from datetime import date
+import json
+from datetime import date, datetime, timezone
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from .. import models, schemas
+from .. import metrics, models, schemas
 from ..config import get_settings
-from .reference_resolver import resolve_credential_database_id
+
+
+def _digits(value: str | None) -> str:
+    return "".join(ch for ch in (value or "") if ch.isdigit())
+
+
+def _match_age_days(cm: models.CredentialMatch) -> int | None:
+    """Age of a cached match in days, from check_date (preferred) or date_created.
+
+    None when neither timestamp is available (age unknown)."""
+    stamp = cm.check_date or cm.date_created
+    if stamp is None:
+        return None
+    # Stored naive-UTC (see models._now); compare against naive-UTC now.
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    delta = now - stamp
+    return max(delta.days, 0)
+
+
+def _is_stale(cm: models.CredentialMatch, ttl_days: int) -> bool:
+    """True when a TTL is configured and the match is older than it."""
+    if ttl_days <= 0:
+        return False
+    age = _match_age_days(cm)
+    return age is not None and age > ttl_days
+
+
+def _npi_ok(cm: models.CredentialMatch, npi: str | None) -> bool:
+    """True when no NPI filter is set, or the result JSON's `npi` equals it.
+
+    Portable across MySQL/SQLite — parses the stored JSON in Python rather than
+    relying on dialect-specific JSON SQL functions."""
+    want = _digits(npi)
+    if not want:
+        return True
+    try:
+        data = json.loads(cm.match) if cm.match else {}
+    except (ValueError, TypeError):
+        return False
+    return isinstance(data, dict) and _digits(str(data.get("npi") or "")) == want
 
 
 def _base_params_filter(
-    stmt, payload: schemas.CredentialSearchIn, credential_database_id: int, *, include_name: bool
+    stmt, payload: schemas.CredentialSearchIn, registry: str, *, include_name: bool
 ):
     """Add the registry + credential identifier filters (and optionally name)."""
     stmt = stmt.where(
-        models.CredentialMatch.credential_database_id == credential_database_id,
-        models.CredentialMatch.current.is_(True),
+        func.lower(models.CredentialMatch.registry) == registry,
     )
     if payload.params_credential_id:
         stmt = stmt.where(
@@ -66,57 +105,82 @@ def _is_valid(cm: models.CredentialMatch) -> bool:
 
 
 def search_credential(db: Session, payload: schemas.CredentialSearchIn) -> schemas.CredentialSearchResult:
-    # Resolve the registry (do not create it for a read-only search).
-    credential_database_id = resolve_credential_database_id(
-        db, id=payload.credential_database_id, prefix=payload.registry_prefix, create=False
-    )
-    if credential_database_id is None:
-        return schemas.CredentialSearchResult(
-            found=False,
-            action="trigger_scrape",
-            reason="Registry not known to Golden Profile; trigger bot scrape.",
-        )
+    # Registry is now a denormalized string on the match itself.
+    registry = (payload.registry or "").strip().lower()
 
-    # Step 1: valid current match on the full params (name included).
+    # Effective cache TTL for this registry (0 => disabled, serve any age).
+    ttl_days = get_settings().ttl_for_prefix(registry)
+
+    # Step 1: valid match on the full params (name included), freshest first.
     # NULLs-last ordering expressed portably (MySQL has no NULLS LAST):
     # `check_date IS NULL` sorts False(0) before True(1), so non-null dates win.
     stmt = _base_params_filter(
-        select(models.CredentialMatch), payload, credential_database_id, include_name=True
+        select(models.CredentialMatch), payload, registry, include_name=True
     ).order_by(
         models.CredentialMatch.check_date.is_(None),
         models.CredentialMatch.check_date.desc(),
         models.CredentialMatch.id.desc(),
     )
     for cm in db.scalars(stmt):
-        if _is_valid(cm):
+        if _is_valid(cm) and _npi_ok(cm, payload.npi):
+            # The rows are newest-first, so this is the freshest valid match.
+            # If it is past the registry's TTL, every older one is too — stop
+            # and make CAMI re-scrape rather than serve stale compliance data.
+            if _is_stale(cm, ttl_days):
+                metrics.incr(metrics.SEARCH_STALE)
+                metrics.incr(metrics.SEARCH_MISS)
+                return schemas.CredentialSearchResult(
+                    found=False,
+                    action="trigger_scrape",
+                    reason=(
+                        f"Cached match is stale (age {_match_age_days(cm)}d > "
+                        f"TTL {ttl_days}d); trigger bot scrape."
+                    ),
+                    age_days=_match_age_days(cm),
+                )
+            age = _match_age_days(cm)
+            metrics.incr(metrics.SEARCH_HIT)
+            metrics.record_hit_age(age)
             return schemas.CredentialSearchResult(
                 found=True,
                 action="return_result",
-                reason="Valid current credential match found in Golden Profile.",
+                reason="Valid credential match found in Golden Profile.",
                 credential_match=schemas.CredentialMatchOut.model_validate(cm),
+                age_days=age,
             )
 
     # Step 2: a match on credential params (ignoring name) that has a resolution
     # on record => a previously-resolved name mismatch we can auto-apply.
     stmt = _base_params_filter(
-        select(models.CredentialMatch), payload, credential_database_id, include_name=False
+        select(models.CredentialMatch), payload, registry, include_name=False
     ).order_by(models.CredentialMatch.id.desc())
     for cm in db.scalars(stmt):
+        if not _npi_ok(cm, payload.npi):
+            continue
+        # Honour the same freshness rule on the resolution path.
+        if _is_stale(cm, ttl_days):
+            continue
         resolution = db.scalars(
             select(models.CredentialMatchResolution)
             .where(models.CredentialMatchResolution.credential_match_id == cm.id)
             .order_by(models.CredentialMatchResolution.id.desc())
         ).first()
         if resolution is not None:
+            age = _match_age_days(cm)
+            metrics.incr(metrics.SEARCH_HIT)
+            metrics.incr(metrics.SEARCH_RESOLVE)
+            metrics.record_hit_age(age)
             return schemas.CredentialSearchResult(
                 found=True,
                 action="auto_resolve_name_mismatch",
                 reason="Credential match found with a recorded name-mismatch resolution; auto-resolving.",
                 credential_match=schemas.CredentialMatchOut.model_validate(cm),
                 resolution=schemas.ResolutionOut.model_validate(resolution),
+                age_days=age,
             )
 
     # Step 3: nothing usable in the Golden Profile -> tell CAMI to scrape.
+    metrics.incr(metrics.SEARCH_MISS)
     return schemas.CredentialSearchResult(
         found=False,
         action="trigger_scrape",
@@ -125,33 +189,23 @@ def search_credential(db: Session, payload: schemas.CredentialSearchIn) -> schem
 
 
 def general_search(db: Session, payload: schemas.GeneralSearchIn) -> schemas.GeneralSearchResult:
-    """Name-based lookup: the latest current credential match per registry for a
-    first/last name, plus current exclusion matches for that name.
+    """Name-based lookup: the latest credential match per registry for a
+    first/last name, plus the latest exclusion matches for that name.
 
-    Optional filters (applied to credential matches only): license number
-    (`params_credential_id`) and certification state (the registry's state).
+    Optional filter (applied to credential matches only): license number
+    (`params_credential_id`).
     """
     first = payload.params_first_name.strip().lower()
     last = payload.params_last_name.strip().lower()
 
-    # --- Credential matches: current, matching name, newest first ---
+    # --- Credential matches: matching name, newest first ---
     cm_stmt = select(models.CredentialMatch).where(
-        models.CredentialMatch.current.is_(True),
         func.lower(models.CredentialMatch.params_first_name) == first,
         func.lower(models.CredentialMatch.params_last_name) == last,
     )
     if payload.params_credential_id:
         cm_stmt = cm_stmt.where(
             models.CredentialMatch.params_credential_id == payload.params_credential_id
-        )
-    if payload.params_certification_state:
-        # Certification state filters by the registry's state.
-        cm_stmt = cm_stmt.join(
-            models.CredentialDatabase,
-            models.CredentialDatabase.id == models.CredentialMatch.credential_database_id,
-        ).where(
-            func.lower(models.CredentialDatabase.state)
-            == payload.params_certification_state.strip().lower()
         )
     if not payload.include_expired:
         # Hide expired results by default (an unset expiry_date is not expired).
@@ -171,20 +225,19 @@ def general_search(db: Session, payload: schemas.GeneralSearchIn) -> schemas.Gen
     )
 
     # Keep only the latest match per registry (rows already newest-first).
-    latest_by_registry: dict[int, models.CredentialMatch] = {}
+    latest_by_registry: dict[str | None, models.CredentialMatch] = {}
     for cm in db.scalars(cm_stmt):
-        latest_by_registry.setdefault(cm.credential_database_id, cm)
+        if not _npi_ok(cm, payload.npi):
+            continue
+        latest_by_registry.setdefault(cm.registry, cm)
 
     credential_matches = []
     for cm in latest_by_registry.values():
-        registry = cm.credential_database
         credential_matches.append(
             schemas.GeneralCredentialMatchOut(
                 id=cm.id,
                 cami_employee_id=cm.cami_employee_id,
-                credential_database_id=cm.credential_database_id,
-                registry_prefix=registry.prefix if registry else None,
-                registry_state=registry.state if registry else None,
+                registry=cm.registry,
                 params_first_name=cm.params_first_name,
                 params_middle_name=cm.params_middle_name,
                 params_last_name=cm.params_last_name,
@@ -198,26 +251,30 @@ def general_search(db: Session, payload: schemas.GeneralSearchIn) -> schemas.Gen
             )
         )
 
-    # --- Exclusion matches: current, matching name ---
+    # --- Exclusion matches: matching name, newest first ---
     ex_stmt = (
         select(models.ExclusionMatch)
         .where(
-            models.ExclusionMatch.current.is_(True),
             func.lower(models.ExclusionMatch.params_first_name) == first,
             func.lower(models.ExclusionMatch.params_last_name) == last,
         )
         .order_by(models.ExclusionMatch.id.desc())
     )
+    # Keep only the latest snapshot per (employee, exclusion list) — rows are
+    # newest-first, so the first one seen for a key wins.
     exclusion_matches = []
+    seen_exclusion_keys: set[tuple[int, str | None]] = set()
     for em in db.scalars(ex_stmt):
-        exclusion_list = em.exclusion_list
+        key = (em.cami_employee_id, em.prefix)
+        if key in seen_exclusion_keys:
+            continue
+        seen_exclusion_keys.add(key)
         exclusion_matches.append(
             schemas.GeneralExclusionMatchOut(
                 id=em.id,
                 cami_employee_id=em.cami_employee_id,
                 cami_match_id=em.cami_match_id,
-                exclusion_list_id=em.exclusion_list_id,
-                exclusion_list_prefix=exclusion_list.prefix if exclusion_list else None,
+                prefix=em.prefix,
                 params_first_name=em.params_first_name,
                 params_middle_name=em.params_middle_name,
                 params_last_name=em.params_last_name,
@@ -233,7 +290,6 @@ def general_search(db: Session, payload: schemas.GeneralSearchIn) -> schemas.Gen
         params_first_name=payload.params_first_name,
         params_last_name=payload.params_last_name,
         params_credential_id=payload.params_credential_id,
-        params_certification_state=payload.params_certification_state,
         include_expired=payload.include_expired,
         exclude_no_matches=payload.exclude_no_matches,
         credential_matches=credential_matches,
