@@ -224,15 +224,38 @@ def general_search(db: Session, payload: schemas.GeneralSearchIn) -> schemas.Gen
         models.CredentialMatch.id.desc(),
     )
 
-    # Keep only the latest match per registry (rows already newest-first).
+    # Walk the name-matched rows (newest-first) once. Keep the latest match per
+    # registry as the "winner", and bucket every row by (registry, license) so
+    # we can spot snapshots that disagree with the winner's determination.
     latest_by_registry: dict[str | None, models.CredentialMatch] = {}
+    by_registry_license: dict[tuple[str | None, str | None], list[models.CredentialMatch]] = {}
     for cm in db.scalars(cm_stmt):
         if not _npi_ok(cm, payload.npi):
             continue
         latest_by_registry.setdefault(cm.registry, cm)
+        by_registry_license.setdefault((cm.registry, cm.params_credential_id), []).append(cm)
 
     credential_matches = []
     for cm in latest_by_registry.values():
+        winner_valid = _is_valid(cm)
+        # A conflict is a recent snapshot for the SAME registry + license whose
+        # validity determination differs from the winner. Different registries
+        # legitimately differ (different scope) — those are not conflicts.
+        conflicts = []
+        for other in by_registry_license.get((cm.registry, cm.params_credential_id), []):
+            if other.id == cm.id:
+                continue
+            if _is_valid(other) != winner_valid:
+                conflicts.append(
+                    schemas.GeneralCredentialConflictOut(
+                        id=other.id,
+                        valid=_is_valid(other),
+                        match_summary_status=other.match_summary_status,
+                        status=other.status,
+                        expiry_date=other.expiry_date,
+                        check_date=other.check_date,
+                    )
+                )
         credential_matches.append(
             schemas.GeneralCredentialMatchOut(
                 id=cm.id,
@@ -248,6 +271,8 @@ def general_search(db: Session, payload: schemas.GeneralSearchIn) -> schemas.Gen
                 expiry_date=cm.expiry_date,
                 check_date=cm.check_date,
                 match=cm.match,
+                has_conflict=bool(conflicts),
+                conflicts=conflicts,
             )
         )
 

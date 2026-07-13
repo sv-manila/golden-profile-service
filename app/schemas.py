@@ -319,6 +319,20 @@ class GeneralSearchIn(BaseModel):
         return self
 
 
+class GeneralCredentialConflictOut(BaseModel):
+    """A recent snapshot for the same (registry, license) whose validity
+    determination disagrees with the winning match. Exposed so CAMI can show
+    the disagreement rather than silently trusting one answer."""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    valid: bool
+    match_summary_status: Optional[str] = None
+    status: Optional[str] = None
+    expiry_date: Optional[date] = None
+    check_date: Optional[datetime] = None
+
+
 class GeneralCredentialMatchOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -335,6 +349,10 @@ class GeneralCredentialMatchOut(BaseModel):
     expiry_date: Optional[date] = None
     check_date: Optional[datetime] = None
     match: Optional[str] = None
+    # Conflict signal: the winning match disagrees with one or more recent
+    # snapshots for the same registry + license. Empty list => no disagreement.
+    has_conflict: bool = False
+    conflicts: list[GeneralCredentialConflictOut] = []
 
 
 class GeneralExclusionMatchOut(BaseModel):
