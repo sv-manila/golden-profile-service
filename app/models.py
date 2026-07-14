@@ -221,6 +221,21 @@ class CredentialMatch(Base):
     )
 
 
+class CanonicalEmployee(Base):
+    """Materialized canonical-identity graph.
+
+    One row per cami_employee_id, mapping it to its canonical group id (the
+    smallest cami_employee_id in the group). Rebuilt in bulk by the resolution
+    service; lets a per-employee lookup read the group by index instead of
+    rescanning every credential match to recompute the closure.
+    """
+    __tablename__ = "employee_canonical"
+
+    cami_employee_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    canonical_id: Mapped[int] = mapped_column(Integer, index=True)
+    date_updated: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
+
+
 class CredentialMatchResolution(Base):
     __tablename__ = "credential_match_resolutions"
 

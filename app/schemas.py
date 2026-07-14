@@ -399,6 +399,11 @@ class ResolveOut(BaseModel):
     names: list[ResolveName] = []
 
 
+class ResolveRebuildResult(BaseModel):
+    employees: int
+    groups: int
+
+
 class GeneralExclusionMatchOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

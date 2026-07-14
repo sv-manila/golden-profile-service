@@ -137,6 +137,70 @@ def _name_candidates(db: Session, first: str, last: str) -> list[int]:
     return sorted({row for row in db.scalars(stmt)})
 
 
+def _all_employees(db: Session) -> set[int]:
+    emps: set[int] = set()
+    emps |= set(db.scalars(select(models.CredentialMatch.cami_employee_id)))
+    emps |= set(db.scalars(select(models.ExclusionMatch.cami_employee_id)))
+    emps |= set(db.scalars(select(models.Individual.cami_employee_id)))
+    emps |= set(db.scalars(select(models.Entity.cami_employee_id)))
+    return emps
+
+
+def rebuild(db: Session) -> dict[str, int]:
+    """Materialize the canonical graph: assign every known employee a canonical
+    group id (the smallest cami_employee_id in its strong-id-linked component).
+    Full rebuild in one transaction. Run on a schedule behind live syncs."""
+    emp_keys = _employee_keys(db)
+    key_emps = _key_index(emp_keys)
+    all_emps = _all_employees(db)
+
+    seen: set[int] = set()
+    rows: list[models.CanonicalEmployee] = []
+    groups = 0
+    for emp in sorted(all_emps):
+        if emp in seen:
+            continue
+        component = _closure({emp}, emp_keys, key_emps) | {emp}
+        canonical = min(component)
+        for member in component:
+            seen.add(member)
+            rows.append(
+                models.CanonicalEmployee(cami_employee_id=member, canonical_id=canonical)
+            )
+        groups += 1
+
+    db.query(models.CanonicalEmployee).delete()
+    db.add_all(rows)
+    db.commit()
+    return {"employees": len(rows), "groups": groups}
+
+
+def resolve_employee(db: Session, cami_employee_id: int) -> schemas.ResolveOut:
+    """Fast per-employee lookup from the materialized graph (no full scan)."""
+    row = db.get(models.CanonicalEmployee, cami_employee_id)
+    if row is None:
+        return schemas.ResolveOut(
+            resolved=False, match_basis="none", canonical_employee_ids=[],
+            name_only_candidates=[], identifiers=schemas.ResolveIdentifiers(), names=[],
+        )
+    group = set(
+        db.scalars(
+            select(models.CanonicalEmployee.cami_employee_id).where(
+                models.CanonicalEmployee.canonical_id == row.canonical_id
+            )
+        )
+    )
+    emp_keys = _employee_keys(db)
+    return schemas.ResolveOut(
+        resolved=len(group) > 1,
+        match_basis="persisted",
+        canonical_employee_ids=sorted(group),
+        name_only_candidates=[],
+        identifiers=_identifiers(group, emp_keys),
+        names=_names(db, group),
+    )
+
+
 def resolve(db: Session, payload: schemas.ResolveIn) -> schemas.ResolveOut:
     emp_keys = _employee_keys(db)
     key_emps = _key_index(emp_keys)
