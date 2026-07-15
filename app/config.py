@@ -27,6 +27,12 @@ class Settings(BaseSettings):
     # Volatile registries (state boards) warrant short TTLs; static lists long.
     credential_ttl_overrides: str = ""
 
+    # When true, general_search reads the materialized employee_canonical graph
+    # (fast, index-backed) instead of recomputing the closure per call. Seeds not
+    # yet in the table fall back to a live closure, so freshly-synced-but-not-yet-
+    # rebuilt records still resolve. Default false = always live (no staleness).
+    resolve_use_persisted: bool = False
+
     @property
     def api_key_set(self) -> set[str]:
         return {k.strip() for k in self.api_keys.split(",") if k.strip()}

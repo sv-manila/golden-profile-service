@@ -227,9 +227,9 @@ def general_search(db: Session, payload: schemas.GeneralSearchIn) -> schemas.Gen
     # only the exact-name records are used. Merging never happens on name alone.
     seeds = _name_seed_employees(db, first, last)
     if payload.resolve and seeds:
-        emp_keys = resolution._employee_keys(db)
-        key_emps = resolution._key_index(emp_keys)
-        group = resolution._closure(seeds, emp_keys, key_emps)
+        group = resolution.group_for_seeds(
+            db, seeds, use_persisted=get_settings().resolve_use_persisted
+        )
     else:
         group = seeds
 

@@ -201,6 +201,41 @@ def resolve_employee(db: Session, cami_employee_id: int) -> schemas.ResolveOut:
     )
 
 
+def group_for_seeds(db: Session, seeds: set[int], use_persisted: bool = False) -> set[int]:
+    """Canonical group for a set of seed employees.
+
+    Live (default): recompute the closure. Persisted: read groups from
+    employee_canonical for seeds already materialized, and fall back to a live
+    closure only for seeds not yet in the table (freshly synced before the next
+    rebuild) — so the fast path never silently drops new records."""
+    if not seeds:
+        return set()
+    if not use_persisted:
+        emp_keys = _employee_keys(db)
+        return _closure(seeds, emp_keys, _key_index(emp_keys))
+
+    rows = db.execute(
+        select(models.CanonicalEmployee.cami_employee_id, models.CanonicalEmployee.canonical_id)
+        .where(models.CanonicalEmployee.cami_employee_id.in_(seeds))
+    ).all()
+    present = {emp: cid for emp, cid in rows}
+    result: set[int] = set()
+    canonical_ids = set(present.values())
+    if canonical_ids:
+        result |= set(
+            db.scalars(
+                select(models.CanonicalEmployee.cami_employee_id).where(
+                    models.CanonicalEmployee.canonical_id.in_(canonical_ids)
+                )
+            )
+        )
+    unresolved = seeds - present.keys()
+    if unresolved:
+        emp_keys = _employee_keys(db)
+        result |= _closure(unresolved, emp_keys, _key_index(emp_keys))
+    return result
+
+
 def resolve(db: Session, payload: schemas.ResolveIn) -> schemas.ResolveOut:
     emp_keys = _employee_keys(db)
     key_emps = _key_index(emp_keys)
