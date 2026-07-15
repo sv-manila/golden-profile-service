@@ -142,8 +142,27 @@ def _employee_keys(db: Session) -> dict[int, set[str]]:
             emp_keys[emp].add(f"npi:{npi}")
 
     for ind in db.scalars(select(models.Individual).where(models.Individual.current.is_(True))):
+        emp = ind.cami_employee_id
         if ind.npi:
-            emp_keys[ind.cami_employee_id].add(f"npi:{_digits(ind.npi)}")
+            emp_keys[emp].add(f"npi:{_digits(ind.npi)}")
+        # SSN as a strong key — the salted hash, never the last-four (which is
+        # too common to safely merge on). Populated when CAMI sends ssn_hash or a
+        # raw SSN the service hashes.
+        if ind.ssn_hash:
+            emp_keys[emp].add(f"ssn:{ind.ssn_hash}")
+        # Name + date of birth: name alone never merges, but full name + DOB is
+        # discriminating enough to treat as a strong link.
+        if ind.date_of_birth:
+            dob = ind.date_of_birth.isoformat()
+            for n in ind.names:
+                first, last = _norm(n.first_name), _norm(n.last_name)
+                if first and last:
+                    emp_keys[emp].add(f"ndob:{first}:{last}:{dob}")
+
+    # Entities: TIN hash is the entity equivalent of SSN.
+    for ent in db.scalars(select(models.Entity).where(models.Entity.current.is_(True))):
+        if ent.tin_hash:
+            emp_keys[ent.cami_employee_id].add(f"tin:{ent.tin_hash}")
 
     return emp_keys
 
