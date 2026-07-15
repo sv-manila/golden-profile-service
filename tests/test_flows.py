@@ -333,18 +333,17 @@ def test_general_search_hides_expired_by_default(client):
     assert len(r2.json()["credential_matches"]) == 1
 
 
-def test_general_search_exclude_no_matches(client):
-    client.post("/api/v1/credential-matches", json={
+def test_no_match_is_dropped_so_never_in_general_search(client):
+    # A NO_MATCH (status "2") is not stored at all, so it never appears in search
+    # regardless of the exclude_no_matches flag.
+    resp = client.post("/api/v1/credential-matches", json={
         "cami_employee_id": 9300, "registry": "nm-reg",
         "params_first_name": "Noma", "params_last_name": "Tch",
         "params_credential_id": "N-1", "status": "2",   # CredentialMatch::NO_MATCH
         "match_summary_status": "No Match", "match": "{\"response_code\":1}",
+        "check_date": "2026-06-01T00:00:00",
     })
-    # Default: no-match is included.
+    assert resp.json()["skipped"] is True
     r = client.post("/api/v1/search/general",
                     json={"params_first_name": "Noma", "params_last_name": "Tch"})
-    assert len(r.json()["credential_matches"]) == 1
-    # exclude_no_matches=true: filtered out.
-    r2 = client.post("/api/v1/search/general",
-                     json={"params_first_name": "Noma", "params_last_name": "Tch", "exclude_no_matches": True})
-    assert len(r2.json()["credential_matches"]) == 0
+    assert len(r.json()["credential_matches"]) == 0

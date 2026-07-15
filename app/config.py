@@ -39,9 +39,18 @@ class Settings(BaseSettings):
     # rebuilt records still resolve. Default false = always live (no staleness).
     resolve_use_persisted: bool = False
 
+    # Credential `status` values representing a NO-MATCH determination — never
+    # stored (no usable cached answer). Comma-separated; "2" is
+    # CredentialMatch::NO_MATCH as serialized by the client.
+    no_match_statuses: str = "2"
+
     @property
     def api_key_set(self) -> set[str]:
         return {k.strip() for k in self.api_keys.split(",") if k.strip()}
+
+    @property
+    def no_match_status_set(self) -> set[str]:
+        return {s.strip().upper() for s in self.no_match_statuses.split(",") if s.strip()}
 
     @property
     def valid_status_set(self) -> set[str]:

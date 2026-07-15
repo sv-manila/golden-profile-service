@@ -20,6 +20,7 @@ SEARCH_STALE = "search.stale"                # a valid match existed but was pas
 SEARCH_RESOLVE = "search.auto_resolve"       # served via a name-mismatch resolution
 SEARCH_CONFLICT = "search.conflict"          # general search surfaced a disagreement
 SYNC_CREDENTIAL_OK = "sync.credential.ok"
+SYNC_CREDENTIAL_NO_MATCH_SKIP = "sync.credential.no_match_skipped"
 SYNC_CREDENTIAL_BULK_OK = "sync.credential.bulk_ok"
 
 _lock = threading.Lock()

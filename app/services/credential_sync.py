@@ -10,6 +10,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import metrics, models, schemas
+from ..config import get_settings
+
+
+def _is_no_match(payload: schemas.CredentialMatchSyncIn) -> bool:
+    """A NO-MATCH determination (CredentialMatch::NO_MATCH -> status "2") carries
+    no usable cached answer, so it is never stored."""
+    return (payload.status or "").strip().upper() in get_settings().no_match_status_set
 
 
 def _existing_snapshot(
@@ -41,6 +48,13 @@ def _sync_one(
     """Insert one snapshot (idempotent per check event). Does NOT commit — the
     caller owns the transaction so a batch can commit atomically."""
     registry = (payload.registry or "").strip().lower()
+
+    # No-match results are dropped — nothing worth caching.
+    if _is_no_match(payload):
+        metrics.incr(metrics.SYNC_CREDENTIAL_NO_MATCH_SKIP)
+        return schemas.CredentialMatchSyncResult(
+            id=None, cami_employee_id=payload.cami_employee_id, registry=registry, skipped=True
+        )
 
     existing = _existing_snapshot(db, payload)
     if existing is not None:
@@ -83,7 +97,8 @@ def sync_credential_match(
 ) -> schemas.CredentialMatchSyncResult:
     result = _sync_one(db, payload)
     db.commit()
-    metrics.incr(metrics.SYNC_CREDENTIAL_OK)
+    if not result.skipped:
+        metrics.incr(metrics.SYNC_CREDENTIAL_OK)
     return result
 
 
@@ -93,6 +108,8 @@ def sync_credential_matches_bulk(
     """Sync many matches in a single transaction (one commit for the batch)."""
     results = [_sync_one(db, item) for item in payload.items]
     db.commit()
-    metrics.incr(metrics.SYNC_CREDENTIAL_OK, len(results))
+    stored = [r for r in results if not r.skipped]
+    metrics.incr(metrics.SYNC_CREDENTIAL_OK, len(stored))
     metrics.incr(metrics.SYNC_CREDENTIAL_BULK_OK)
-    return schemas.CredentialMatchBulkSyncResult(count=len(results), results=results)
+    # count = rows actually stored; results still lists skipped entries.
+    return schemas.CredentialMatchBulkSyncResult(count=len(stored), results=results)

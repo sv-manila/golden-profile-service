@@ -135,9 +135,10 @@ class CredentialMatchSyncIn(BaseModel):
 
 
 class CredentialMatchSyncResult(BaseModel):
-    id: int
+    id: Optional[int] = None            # None when skipped (no row written)
     cami_employee_id: int
     registry: Optional[str] = None
+    skipped: bool = False               # true = no-match, dropped, not stored
 
 
 class CredentialMatchBulkSyncIn(BaseModel):
