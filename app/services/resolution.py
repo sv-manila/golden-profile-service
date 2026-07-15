@@ -16,6 +16,7 @@ Portable across MySQL/SQLite — identifiers are parsed in Python, no dialect JS
 """
 from __future__ import annotations
 
+import difflib
 import json
 from collections import defaultdict
 
@@ -23,6 +24,85 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
+
+# A few common given-name diminutives (both directions checked). Not exhaustive —
+# just enough to catch the obvious pairs prefix/edit-distance miss.
+_DIMINUTIVES = {
+    ("robert", "bob"), ("robert", "rob"), ("william", "bill"), ("william", "will"),
+    ("richard", "rick"), ("richard", "dick"), ("michael", "mike"), ("james", "jim"),
+    ("katherine", "kathy"), ("katherine", "kate"), ("elizabeth", "liz"),
+    ("elizabeth", "beth"), ("margaret", "peggy"), ("charles", "chuck"),
+    ("thomas", "tom"), ("joseph", "joe"), ("john", "jack"), ("daniel", "dan"),
+}
+
+
+def _norm(value: str | None) -> str:
+    return "".join(ch for ch in (value or "").lower() if ch.isalnum())
+
+
+def _first_name_score(a: str, b: str) -> tuple[float, str]:
+    """Similarity of two given names → (score 0..1, reason). 0 = not similar."""
+    a, b = _norm(a), _norm(b)
+    if not a or not b:
+        return 0.0, ""
+    if a == b:
+        return 0.95, "same name, no shared identifier"
+    lo, hi = sorted((a, b), key=len)
+    if len(lo) == 1 and hi.startswith(lo):
+        return 0.6, "initial matches"
+    if len(lo) >= 2 and hi.startswith(lo):
+        return 0.85, "one name is a prefix of the other"
+    if (a, b) in _DIMINUTIVES or (b, a) in _DIMINUTIVES:
+        return 0.9, "known nickname"
+    ratio = difflib.SequenceMatcher(None, a, b).ratio()
+    if ratio >= 0.8:
+        return round(ratio, 2), "spelling is close"
+    return 0.0, ""
+
+
+def suggestions(db: Session, first: str, last: str) -> list[schemas.ResolveSuggestion]:
+    """Same-last-name employees with a variant first name who are NOT already
+    strong-id linked to the queried name — candidates for human review, never a
+    merge. Sourced from credential_matches names."""
+    first, last = (first or "").strip(), (last or "").strip()
+    if not first or not last:
+        return []
+
+    # Records already merged with the queried name are not "suggestions".
+    seeds = set(
+        db.scalars(
+            select(models.CredentialMatch.cami_employee_id).where(
+                func.lower(models.CredentialMatch.params_first_name) == first.lower(),
+                func.lower(models.CredentialMatch.params_last_name) == last.lower(),
+            )
+        )
+    )
+    emp_keys = _employee_keys(db)
+    merged = _closure(seeds, emp_keys, _key_index(emp_keys)) if seeds else set()
+
+    # Candidates: same (normalized) last name.
+    rows = db.execute(
+        select(
+            models.CredentialMatch.cami_employee_id,
+            models.CredentialMatch.params_first_name,
+            models.CredentialMatch.params_last_name,
+        ).where(func.lower(models.CredentialMatch.params_last_name) == last.lower()).distinct()
+    ).all()
+
+    best: dict[int, schemas.ResolveSuggestion] = {}
+    for emp, cand_first, cand_last in rows:
+        if emp in merged:
+            continue
+        score, reason = _first_name_score(first, cand_first or "")
+        if score <= 0:
+            continue
+        existing = best.get(emp)
+        if existing is None or score > existing.score:
+            best[emp] = schemas.ResolveSuggestion(
+                cami_employee_id=emp, first_name=cand_first, last_name=cand_last,
+                score=score, reason=reason,
+            )
+    return sorted(best.values(), key=lambda s: s.score, reverse=True)
 
 
 def _digits(value) -> str:

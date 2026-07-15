@@ -404,6 +404,26 @@ class ResolveRebuildResult(BaseModel):
     groups: int
 
 
+class ResolveSuggestionsIn(BaseModel):
+    params_first_name: str
+    params_last_name: str
+
+
+class ResolveSuggestion(BaseModel):
+    cami_employee_id: int
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    score: float
+    reason: str
+
+
+class ResolveSuggestionsOut(BaseModel):
+    params_first_name: str
+    params_last_name: str
+    # Review-only candidates — the caller confirms; the service never merges these.
+    suggestions: list[ResolveSuggestion] = []
+
+
 class GeneralExclusionMatchOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

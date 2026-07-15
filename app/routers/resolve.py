@@ -31,6 +31,20 @@ def rebuild(db: Session = Depends(get_db)):
     return resolution_service.rebuild(db)
 
 
+@router.post("/suggestions", response_model=schemas.ResolveSuggestionsOut)
+def suggestions(payload: schemas.ResolveSuggestionsIn, db: Session = Depends(get_db)):
+    """Review-only name-variant candidates: same-last-name employees with a
+    similar first name who are NOT already strong-id linked. Never merges —
+    surfaces possible same-person records for a human to confirm."""
+    return schemas.ResolveSuggestionsOut(
+        params_first_name=payload.params_first_name,
+        params_last_name=payload.params_last_name,
+        suggestions=resolution_service.suggestions(
+            db, payload.params_first_name, payload.params_last_name
+        ),
+    )
+
+
 @router.get("/employee/{cami_employee_id}", response_model=schemas.ResolveOut)
 def resolve_employee(cami_employee_id: int, db: Session = Depends(get_db)):
     """Fast canonical-group lookup for one employee, from the materialized graph
