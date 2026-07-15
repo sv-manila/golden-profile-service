@@ -3,12 +3,18 @@ from __future__ import annotations
 
 import json
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Resolve .env relative to the project root (parent of app/), not the current
+# working directory — so the service loads the same config no matter where it is
+# launched from (e.g. a launcher whose cwd is a parent directory).
+_ENV_FILE = str(Path(__file__).resolve().parent.parent / ".env")
+
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(env_file=_ENV_FILE, env_file_encoding="utf-8", extra="ignore")
 
     database_url: str = "sqlite:///./golden_profile.db"
     # Comma-separated list of accepted API keys. Empty => auth disabled (dev only).
