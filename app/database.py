@@ -4,9 +4,10 @@ from __future__ import annotations
 from collections.abc import Iterator
 
 from sqlalchemy import create_engine
-from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 
 from .config import get_settings
+from .streamline_schema import metadata
 
 settings = get_settings()
 
@@ -15,10 +16,6 @@ connect_args = {"check_same_thread": False} if settings.database_url.startswith(
 
 engine = create_engine(settings.database_url, connect_args=connect_args, pool_pre_ping=True, future=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
-
-
-class Base(DeclarativeBase):
-    pass
 
 
 def get_db() -> Iterator[Session]:
@@ -31,7 +28,7 @@ def get_db() -> Iterator[Session]:
 
 
 def init_db() -> None:
-    """Create all tables. Import models first so they register on Base.metadata."""
-    from . import models  # noqa: F401  (register mappers)
-
-    Base.metadata.create_all(bind=engine)
+    """Create the schema — a no-op safety net against a real MySQL
+    streamline_local (tables already exist there); builds the schema fresh
+    against the throwaway SQLite DB used in tests."""
+    metadata.create_all(bind=engine)

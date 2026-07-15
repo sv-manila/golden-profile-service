@@ -16,7 +16,7 @@ _ENV_FILE = str(Path(__file__).resolve().parent.parent / ".env")
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=_ENV_FILE, env_file_encoding="utf-8", extra="ignore")
 
-    database_url: str = "sqlite:///./golden_profile.db"
+    database_url: str = "mysql+pymysql://root:root@127.0.0.1:33066/streamline_local"
     # Comma-separated list of accepted API keys. Empty => auth disabled (dev only).
     api_keys: str = "dev-cami-key"
     # Comma-separated credential-match statuses treated as a valid cached result.
@@ -33,16 +33,16 @@ class Settings(BaseSettings):
     # Volatile registries (state boards) warrant short TTLs; static lists long.
     credential_ttl_overrides: str = ""
 
-    # When true, general_search reads the materialized employee_canonical graph
-    # (fast, index-backed) instead of recomputing the closure per call. Seeds not
-    # yet in the table fall back to a live closure, so freshly-synced-but-not-yet-
-    # rebuilt records still resolve. Default false = always live (no staleness).
-    resolve_use_persisted: bool = False
-
     # Credential `status` values representing a NO-MATCH determination — never
     # stored (no usable cached answer). Comma-separated; "2" is
     # CredentialMatch::NO_MATCH as serialized by the client.
     no_match_statuses: str = "2"
+
+    # Resolution scoring: a candidate pair auto-merges into one canonical
+    # identity at or above this score; falls into the review-only suggestions
+    # band between here and resolve_suggest_threshold; below that, unrelated.
+    resolve_merge_threshold: float = 0.85
+    resolve_suggest_threshold: float = 0.5
 
     @property
     def api_key_set(self) -> set[str]:
