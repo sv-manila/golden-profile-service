@@ -42,27 +42,59 @@ assumption:
 | Exclusion resolution action | `exclusion_match_actions` | `match_actions` (`match_id`, `action_type`, `note`, `status`, `is_*_mismatch`, `resolved_via`) | Same shape as the mirror's version, different table name. |
 | Canonical identity graph | `employee_canonical` table, rebuilt on a schedule | **not persisted** — computed live per search | See below. |
 
-## Resolution (cross-employee canonical merging)
+## Resolution (cross-employee canonical merging via scoring)
 
-Port `resolution.py`'s strong-key transitive closure to read directly from
-`streamline_local.employees` + `streamline_local.credential_matches`:
+Replaces the mirror's boolean strong-key transitive closure with a **weighted score**
+computed per candidate pair of employees, read directly from `streamline_local.employees`
++ `streamline_local.credential_matches`. This generalizes (not replaces) today's behavior:
+every exact strong-key match that used to auto-merge still auto-merges — the score model
+is a strict superset that additionally lets strong *fuzzy* combinations (close name +
+matching DOB) cross the same bar, and gives the review-only suggestions feature a real
+multi-factor score instead of its current name-only heuristic.
 
-- `ssn:{employees.ssn_hash}` (already a salted hash column on `employees` — no derivation
-  needed, unlike the old mirror which sometimes had it empty because the client only sent
-  `ssn_last_four`).
-- `npi:{employees.npi}` (also directly on `employees` now, not only inside a JSON blob).
-- `lic:{credential_matches.registry}:{credential_matches.credential_id}`.
+**Score components** (per candidate pair, each 0.0–1.0 contribution):
 
-Closure is computed live, the same way the mirror's hot path already falls back to a live
-closure for un-rebuilt seeds (`resolution.group_for_seeds`) — that fallback code path is
-close to what we need permanently now; there's just no persisted table to check first and
-no `RESOLVE_USE_PERSISTED` flag. `POST /api/v1/resolve/rebuild` and the
-`golden-profile:rebuild-graph` scheduled command are removed — nothing to rebuild.
-`GET /api/v1/resolve/employee/{id}` stays as an endpoint, same response shape, just computed
-on every call.
+| Signal | Source | Weight / contribution |
+|---|---|---|
+| SSN hash exact match | `employees.ssn_hash` | 1.0 (alone reaches auto-merge) |
+| NPI exact match | `employees.npi` | 1.0 (alone reaches auto-merge) |
+| License exact match | `credential_matches.registry` + `credential_id` | 0.9 (alone reaches auto-merge) |
+| Name similarity | reuse the existing `_first_name_score` scorer (exact .95 / diminutive .9 / prefix .85 / initial .6 / difflib ≥.8) gated on matching normalized last name | contributes `similarity * 0.5` |
+| DOB exact match | `employees.date_of_birth` | contributes `0.4` if equal |
 
-Name is still never a merge key (unchanged invariant — "two John Millers" stay separate
-unless linked by a strong key).
+`score = min(1.0, max(ssn_hit, npi_hit, license_hit) + name_component + dob_component)` —
+any single strong-key hit already saturates near/at 1.0 on its own (unchanged from today);
+name+DOB can independently add up to `0.5 + 0.4 = 0.9`, so an exact-name + matching-DOB pair
+crosses the merge bar even with zero shared strong key, and a diminutive/initial name match
+with a matching DOB lands in the review band instead. Name similarity alone (no DOB, no
+strong key) tops out at `0.5` — below the merge bar, so **name alone still never triggers an
+automatic merge** (the existing invariant holds), though it can still surface a review-only
+suggestion, same as today's F5 feature.
+
+**Three bands** (thresholds are settings, defaults below — same env-var-configurable pattern
+as `CREDENTIAL_TTL_DAYS`):
+
+- `score >= RESOLVE_MERGE_THRESHOLD` (default `0.85`) → **auto-merge**: employees fold into
+  one canonical identity, same as strong-key closure does today.
+- `RESOLVE_SUGGEST_THRESHOLD <= score < RESOLVE_MERGE_THRESHOLD` (default `0.5`) →
+  **review-only suggestion**: surfaced via `/api/v1/resolve/suggestions` and the Explorer's
+  "possible same person" panel, never auto-merged.
+  - `score < RESOLVE_SUGGEST_THRESHOLD` → unrelated, not shown at all.
+
+Clustering: build a graph over the candidate employee set (scoped the same way suggestions
+are scoped today — same normalized last name, or already sharing a strong key — to keep
+pairwise comparisons bounded) with edges where `score >= RESOLVE_MERGE_THRESHOLD`, then take
+connected components as canonical groups (replaces the old pure strong-key
+transitive-closure union-find with the same union-find algorithm, just gated on scored
+edges instead of boolean ones).
+
+Computed live on every call — same as the mirror's existing live-fallback path
+(`resolution.group_for_seeds`) already did for un-rebuilt seeds, just now permanent. There
+is no persisted graph, no `RESOLVE_USE_PERSISTED` flag, no `POST /api/v1/resolve/rebuild`,
+no `golden-profile:rebuild-graph` scheduled command — nothing to rebuild.
+`GET /api/v1/resolve/employee/{id}` stays as an endpoint, same response shape, computed on
+every call; its response gains a `match_basis` per linked member (`"strong_key"` vs.
+`"scored"`) so a human can tell why two records were merged.
 
 ## Removed
 
@@ -102,11 +134,14 @@ unless linked by a strong key).
   pull matching `credential_matches` where `current=1`, apply the existing TTL/staleness
   rule (`_is_stale`) using `date_updated`/`last_modified` in place of `check_date`.
 - `POST /api/v1/search/general` (`GeneralSearchIn`/`Out`) — same contract; resolves the
-  query name to a canonical group (live closure above), gathers credential + exclusion
+  query name to a canonical group (scored closure above), gathers credential + exclusion
   matches across the whole group, keeps conflict flagging (same-registry+license,
   disagreeing validity) and `has_conflict`/`conflicts`.
-- `GET /api/v1/resolve/employee/{id}`, `POST /api/v1/resolve/suggestions` (fuzzy
-  name-variant review candidates) — same contracts, computed live.
+- `GET /api/v1/resolve/employee/{id}` — same contract, computed live via the scored
+  closure, plus the new per-member `match_basis`.
+- `POST /api/v1/resolve/suggestions` — now powered by the same scorer as auto-merge
+  (review band) instead of its own one-off name-only heuristic; response gains a `score`
+  field per suggestion alongside the existing `reason` string.
 - `GET /api/v1/stats` metrics endpoint — unchanged (in-memory counters).
 - Client: `GoldenProfileGateway::lookupCredentialData()` / `generalSearch()` — unchanged
   call sites (`EmployeeController::updateUncachedCredentialMatchesFromCache()` keeps
@@ -143,8 +178,13 @@ unless linked by a strong key).
 - Service: existing pytest suite gets rewritten test doubles — tests currently seed the
   mirror's SQLite tables directly; they'll need to seed `streamline_local`-shaped tables
   instead (still SQLite for tests, same portable-SQL discipline the mirror code followed).
-  Search/resolution/conflict/staleness test *behavior* stays the same; only the seed
-  fixtures and column names change.
+  Search/conflict/staleness test *behavior* stays the same; only the seed fixtures and
+  column names change.
+- New scoring-specific tests: each weight contributes correctly in isolation (SSN-only,
+  NPI-only, license-only, name+DOB, name-only), the merge/suggest/separate band boundaries,
+  that name-only alone never crosses the merge threshold (the one invariant that must not
+  regress), and that an exact strong-key hit still merges even when name/DOB are absent or
+  mismatched (backward-compat with today's behavior).
 - Client: PHPUnit tests for the removed observer/listeners/job/commands are deleted along
   with the code. Gateway tests for `lookupCredentialData`/`generalSearch` are kept (mocked
   HTTP, unaffected by the service's internal query rewrite).
