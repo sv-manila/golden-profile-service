@@ -188,9 +188,10 @@ every call; its response gains a `match_basis` per linked member (`"strong_key"`
 - Client: PHPUnit tests for the removed observer/listeners/job/commands are deleted along
   with the code. Gateway tests for `lookupCredentialData`/`generalSearch` are kept (mocked
   HTTP, unaffected by the service's internal query rewrite).
-- Manual verification: repeat the same "alice vawter" / "Pearlie Brown" live-DB checks used
-  to verify the mirror (conflict badge, SSN-linked merge, AKA names) but against
-  `streamline_local`, confirming identical results now that it's the same underlying data
+- Manual verification: repeat the same class of live-DB checks used to verify the mirror
+  (a name known locally to have a shared-license merge, for the conflict badge / SSN-linked
+  merge / AKA-names cases) but against `streamline_local`, confirming identical results now
+  that it's the same underlying data
   with one less hop.
 
 ## Open follow-ups (explicitly not solved here)

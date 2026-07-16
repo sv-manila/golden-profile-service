@@ -2874,12 +2874,12 @@ def _redacted_url() -> str:
 Run: `cd C:\new-codes\golden-profile-explorer && ..\golden-profile-service\.venv\Scripts\python.exe -c "
 from app.queries import search_profiles, overview_stats
 print(overview_stats())
-r = search_profiles('alice', 'vawter')
+r = search_profiles('<first name>', '<last name>')
 print(r['total'], r['count'])
 for ident in r['identities']:
     print(ident['identity_id'], ident['display_name'], ident['member_employee_ids'], ident['has_conflict'])
 "`
-Expected: `overview_stats()` prints non-zero counts (matches the live `streamline_local` totals: 12,890 `matches` rows, etc. — do not hardcode exact numbers into an assertion since the DB is live and changes); the "alice vawter"/"alicewrong vawter" search returns one identity consolidating employee ids 156 and 157 (verified via direct query in this session — `certification_number` "8415"/"MN" shared license).
+Substitute `<first name>`/`<last name>` for a name pair you've confirmed locally (via a direct DB query, not committed here) has two employee records sharing a strong key (e.g. the same `certification_number`+`certification_state`) — do not hardcode a specific real person's name/id/license number into this doc. Expected: `overview_stats()` prints non-zero counts (do not hardcode exact numbers into an assertion since the DB is live and changes); the search returns one identity consolidating both employee ids via the shared license.
 
 - [ ] **Step 4: Commit**
 
@@ -2911,13 +2911,13 @@ Expected: PASS.
 - [ ] **Step 3: Start the service against the real local streamline_local and hit it live**
 
 Run: `cd C:\new-codes\golden-profile-service && .venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8137 &`
-Then: `curl -s -X POST http://127.0.0.1:8137/api/v1/search/general -H "Content-Type: application/json" -d "{\"params_first_name\":\"alice\",\"params_last_name\":\"vawter\"}"`
-Expected: `canonical_employee_ids` includes both `156` and `157`; `credential_matches` includes the shared `8415`/`MN` registry entries; response has no 500 error.
+Then: `curl -s -X POST http://127.0.0.1:8137/api/v1/search/general -H "Content-Type: application/json" -d "{\"params_first_name\":\"<first name>\",\"params_last_name\":\"<last name>\"}"` — use the same locally-confirmed shared-license name pair as Task 8 Step 3 (do not hardcode a specific real person's name/id/license number into this doc).
+Expected: `canonical_employee_ids` includes both employee ids; `credential_matches` includes the shared license's registry entries; response has no 500 error.
 
 - [ ] **Step 4: Start the Explorer and confirm the UI still loads (query layer only — front-end fields noted in Task 8 may show blank/undefined for the changed shape)**
 
 Run: `cd C:\new-codes\golden-profile-service && .venv\Scripts\python.exe -m uvicorn app.main:app --app-dir C:\new-codes\golden-profile-explorer --port 8150 &`
-Then open `http://localhost:8150` in a browser and search "alice" / "vawter".
+Then open `http://localhost:8150` in a browser and search using the same name pair.
 Expected: the page loads, `/api/health` and `/api/stats` return 200, the search returns a non-error JSON payload in the Network tab (visual rendering of the identity card is a known follow-up per Task 8's note).
 
 - [ ] **Step 5: Report results, not just "done" — surface any deviations found in Steps 1-4 to the user before considering the plan complete.**
