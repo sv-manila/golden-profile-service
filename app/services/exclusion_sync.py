@@ -1,16 +1,14 @@
 """Process: Syncing Exclusion Matches Data.
 
-When an exclusion match is saved in CAMI, insert a fresh snapshot with
-current=1 and flip preexisting snapshots for the same logical match
-(employee + exclusion list) to current=0.
+When an exclusion match is saved in CAMI, insert a fresh snapshot. Snapshots are
+append-only — the search reads the latest by id, so there is no "current" flag
+to maintain or older rows to supersede.
 """
 from __future__ import annotations
 
-from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
-from .reference_resolver import resolve_exclusion_list_id
 
 
 def _decode_hash(value: str | None) -> bytes | None:
@@ -25,25 +23,7 @@ def _decode_hash(value: str | None) -> bytes | None:
 def sync_exclusion_match(
     db: Session, payload: schemas.ExclusionMatchSyncIn
 ) -> schemas.ExclusionMatchSyncResult:
-    exclusion_list_id = resolve_exclusion_list_id(
-        db, id=payload.exclusion_list_id, prefix=payload.exclusion_list_prefix
-    )
-
-    superseded = list(
-        db.scalars(
-            select(models.ExclusionMatch.id).where(
-                models.ExclusionMatch.cami_employee_id == payload.cami_employee_id,
-                models.ExclusionMatch.exclusion_list_id == exclusion_list_id,
-                models.ExclusionMatch.current.is_(True),
-            )
-        )
-    )
-    if superseded:
-        db.execute(
-            update(models.ExclusionMatch)
-            .where(models.ExclusionMatch.id.in_(superseded))
-            .values(current=False)
-        )
+    prefix = (payload.prefix or "").strip().lower()
 
     em = models.ExclusionMatch(
         cami_employee_id=payload.cami_employee_id,
@@ -51,8 +31,7 @@ def sync_exclusion_match(
         params_first_name=payload.params_first_name,
         params_middle_name=payload.params_middle_name,
         params_last_name=payload.params_last_name,
-        exclusion_list_id=exclusion_list_id,
-        current=True,
+        prefix=prefix,
         match=payload.match,
         hash=_decode_hash(payload.hash),
         is_npi_match=payload.is_npi_match,
@@ -89,6 +68,5 @@ def sync_exclusion_match(
     return schemas.ExclusionMatchSyncResult(
         id=em.id,
         cami_employee_id=payload.cami_employee_id,
-        exclusion_list_id=exclusion_list_id,
-        superseded_ids=superseded,
+        prefix=prefix,
     )

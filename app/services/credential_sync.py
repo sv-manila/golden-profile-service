@@ -1,43 +1,67 @@
 """Process: Syncing Credential Matches Data.
 
-When a credential match is saved with a result in CAMI, insert a fresh snapshot
-with current=1 and flip preexisting snapshots for the same logical credential
-(employee + registry + credential id + license type) to current=0.
+When a credential match is saved with a result in CAMI, insert a fresh snapshot.
+Snapshots are append-only — the search picks the freshest one by check_date, so
+there is no "current" flag to maintain or older rows to supersede.
 """
 from __future__ import annotations
 
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import models, schemas
-from .reference_resolver import resolve_credential_database_id
+from .. import metrics, models, schemas
+from ..config import get_settings
 
 
-def sync_credential_match(
+def _is_no_match(payload: schemas.CredentialMatchSyncIn) -> bool:
+    """A NO-MATCH determination (CredentialMatch::NO_MATCH -> status "2") carries
+    no usable cached answer, so it is never stored."""
+    return (payload.status or "").strip().upper() in get_settings().no_match_status_set
+
+
+def _existing_snapshot(
+    db: Session, payload: schemas.CredentialMatchSyncIn
+) -> models.CredentialMatch | None:
+    """The already-synced snapshot for this check event, if any.
+
+    A check event is identified by (cami_credential_match_id, check_date): the
+    observer, a controller bulk push, and the reconcile safety-net can each push
+    the same event, and without this they would append duplicate snapshots.
+    Dedup only when both keys are present — otherwise we cannot match safely."""
+    if payload.cami_credential_match_id is None or payload.check_date is None:
+        return None
+    stmt = (
+        select(models.CredentialMatch)
+        .where(
+            models.CredentialMatch.cami_credential_match_id
+            == payload.cami_credential_match_id,
+            models.CredentialMatch.check_date == payload.check_date,
+        )
+        .order_by(models.CredentialMatch.id.desc())
+    )
+    return db.scalars(stmt).first()
+
+
+def _sync_one(
     db: Session, payload: schemas.CredentialMatchSyncIn
 ) -> schemas.CredentialMatchSyncResult:
-    credential_database_id = resolve_credential_database_id(
-        db, id=payload.credential_database_id, prefix=payload.registry_prefix
-    )
+    """Insert one snapshot (idempotent per check event). Does NOT commit — the
+    caller owns the transaction so a batch can commit atomically."""
+    registry = (payload.registry or "").strip().lower()
 
-    # The logical key for "the same credential" is employee + registry + the
-    # identifying params. Flip any current snapshot for that key to current=0.
-    superseded = list(
-        db.scalars(
-            select(models.CredentialMatch.id).where(
-                models.CredentialMatch.cami_employee_id == payload.cami_employee_id,
-                models.CredentialMatch.credential_database_id == credential_database_id,
-                models.CredentialMatch.params_credential_id == payload.params_credential_id,
-                models.CredentialMatch.params_license_type == payload.params_license_type,
-                models.CredentialMatch.current.is_(True),
-            )
+    # No-match results are dropped — nothing worth caching.
+    if _is_no_match(payload):
+        metrics.incr(metrics.SYNC_CREDENTIAL_NO_MATCH_SKIP)
+        return schemas.CredentialMatchSyncResult(
+            id=None, cami_employee_id=payload.cami_employee_id, registry=registry, skipped=True
         )
-    )
-    if superseded:
-        db.execute(
-            update(models.CredentialMatch)
-            .where(models.CredentialMatch.id.in_(superseded))
-            .values(current=False)
+
+    existing = _existing_snapshot(db, payload)
+    if existing is not None:
+        return schemas.CredentialMatchSyncResult(
+            id=existing.id,
+            cami_employee_id=existing.cami_employee_id,
+            registry=existing.registry,
         )
 
     cm = models.CredentialMatch(
@@ -48,8 +72,7 @@ def sync_credential_match(
         params_last_name=payload.params_last_name,
         params_credential_id=payload.params_credential_id,
         params_license_type=payload.params_license_type,
-        credential_database_id=credential_database_id,
-        current=True,
+        registry=registry,
         match_summary_status=payload.match_summary_status,
         match_context=payload.match_context,
         match=payload.match,
@@ -61,10 +84,32 @@ def sync_credential_match(
         models.CredentialMatchResolution(note=r.note) for r in payload.resolutions
     ]
     db.add(cm)
-    db.commit()
+    db.flush()  # populate cm.id without ending the transaction
     return schemas.CredentialMatchSyncResult(
         id=cm.id,
         cami_employee_id=payload.cami_employee_id,
-        credential_database_id=credential_database_id,
-        superseded_ids=superseded,
+        registry=registry,
     )
+
+
+def sync_credential_match(
+    db: Session, payload: schemas.CredentialMatchSyncIn
+) -> schemas.CredentialMatchSyncResult:
+    result = _sync_one(db, payload)
+    db.commit()
+    if not result.skipped:
+        metrics.incr(metrics.SYNC_CREDENTIAL_OK)
+    return result
+
+
+def sync_credential_matches_bulk(
+    db: Session, payload: schemas.CredentialMatchBulkSyncIn
+) -> schemas.CredentialMatchBulkSyncResult:
+    """Sync many matches in a single transaction (one commit for the batch)."""
+    results = [_sync_one(db, item) for item in payload.items]
+    db.commit()
+    stored = [r for r in results if not r.skipped]
+    metrics.incr(metrics.SYNC_CREDENTIAL_OK, len(stored))
+    metrics.incr(metrics.SYNC_CREDENTIAL_BULK_OK)
+    # count = rows actually stored; results still lists skipped entries.
+    return schemas.CredentialMatchBulkSyncResult(count=len(stored), results=results)

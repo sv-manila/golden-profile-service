@@ -13,18 +13,27 @@ This implements the schema and the four processes described in `resourceProvider
 
 ## Concepts
 
-### Versioned snapshots (`current` flag)
-Every ingest is stored as a new row with `current = 1`; the previous current
-row(s) for the same logical key are flipped to `current = 0`. This gives a full
-history (Slowly-Changing-Dimension type 2) while a single "golden" record stays
-easy to query.
+### Snapshots
+Every ingest is stored as a new row, giving a full history.
 
-| Table | Logical key that gets superseded |
-|-------|----------------------------------|
-| `individuals` | `cami_employee_id` |
-| `entities` | `cami_employee_id` |
-| `credential_matches` | `cami_employee_id` + `credential_database_id` + `params_credential_id` + `params_license_type` |
-| `exclusion_matches` | `cami_employee_id` + `exclusion_list_id` |
+`individuals` and `entities` are versioned with a `current` flag (Slowly-Changing-
+Dimension type 2): each ingest sets `current = 1` and flips the previous current
+row(s) for the same `cami_employee_id` to `current = 0`, so a single "golden"
+employee record stays easy to query.
+
+`credential_matches` and `exclusion_matches` are **append-only** — no `current`
+flag. Reads pick the freshest snapshot per logical key by recency
+(`check_date` / `id`):
+
+The registry / exclusion list each match belongs to is a **denormalized string
+column** — `credential_matches.registry` and `exclusion_matches.prefix` (the
+SV-native prefix, e.g. `nursysny`, `oig`). There are no separate
+`credential_databases` / `exclusion_lists` reference tables.
+
+| Table | Logical key for "the latest" |
+|-------|------------------------------|
+| `credential_matches` | `cami_employee_id` + `registry` + `params_credential_id` + `params_license_type` |
+| `exclusion_matches` | `cami_employee_id` + `prefix` |
 
 ### The four processes
 1. **Syncing Employee Data** — `POST /api/v1/employees/individuals` or `/entities`.
@@ -36,7 +45,7 @@ easy to query.
    with `actions`).
 4. **Credentialing Search** — `POST /api/v1/search/credential`. Returns an
    `action`:
-   - `return_result` — a valid, unexpired current match was found.
+   - `return_result` — a valid, unexpired match was found.
    - `auto_resolve_name_mismatch` — a match was found that carries a recorded
      name-mismatch resolution; CAMI should return it and auto-resolve.
    - `trigger_scrape` — nothing usable; CAMI should run the bots.
@@ -72,15 +81,15 @@ comma-separated `API_KEYS` setting. Leaving `API_KEYS` empty disables auth
 ```bash
 curl -X POST http://127.0.0.1:8000/api/v1/search/credential \
   -H "X-API-Key: dev-cami-key" -H "Content-Type: application/json" \
-  -d '{"credential_database_id":1,"params_credential_id":"RN-55555","params_license_type":"RN","params_first_name":"John","params_last_name":"Smith"}'
+  -d '{"registry":"nursysny","params_credential_id":"RN-55555","params_license_type":"RN","params_first_name":"John","params_last_name":"Smith"}'
 ```
 
-## Reference data
-Registries and exclusion lists are the FK targets for matches. Seed them via:
-- `POST /api/v1/credential-databases`, `GET /api/v1/credential-databases`
-- `POST /api/v1/exclusion-lists`, `GET /api/v1/exclusion-lists`
-
-Or run `python -m scripts.seed` (see `scripts/seed.py`) for a demo dataset.
+## Registries & exclusion lists
+Each match names its registry / exclusion list inline as a string: send
+`registry` on credential matches and `prefix` on exclusion matches (the client's
+legacy `registry_prefix` / `exclusion_list_prefix` field names are accepted as
+aliases). There is no reference data to seed. Run `python -m scripts.seed` (see
+`scripts/seed.py`) for a demo credential match.
 
 ## Project layout
 ```
